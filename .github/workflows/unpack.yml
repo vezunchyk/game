@@ -2,7 +2,7 @@ name: Розпакувати архів
 on:
   workflow_dispatch:
   push:
-    paths: ["stalker-mmo(2).zip"]
+    paths: ["stalker-mmo (2).zip"]
 permissions:
   contents: write
 jobs:
