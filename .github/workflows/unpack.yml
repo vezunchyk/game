@@ -2,7 +2,7 @@ name: Розпакувати архів
 on:
   workflow_dispatch:
   push:
-    paths: ["stalker-mmo (2).zip"]
+    paths: ["*.zip"]
 permissions:
   contents: write
 jobs:
@@ -12,8 +12,10 @@ jobs:
       - uses: actions/checkout@v4
       - name: Розпакувати і замінити файли
         run: |
-          mkdir /tmp/x && unzip -q stalker-mmo.zip -d /tmp/x
-          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          ZIP=$(ls -t *.zip | head -n1)
+          echo "Архів: $ZIP"
+          mkdir /tmp/x && unzip -q "$ZIP" -d /tmp/x
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github ! -name LICENSE -exec rm -rf {} +
           cp -a /tmp/x/stalker-mmo/. ./
       - name: Зберегти
         run: |
