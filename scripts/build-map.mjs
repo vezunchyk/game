@@ -107,12 +107,13 @@ for (const id of usedIds) {
 }
 
 // --- 2. Розміщення: одразу рахуємо ТОЧНО ТАК, як редактор ---------------------
-// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy]
+// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy, tag]
 //   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
 //   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
 //   flags     — 1: flipX, 2: flipY, 4: isRoof, flags>>3: поверх тайла (floor)
 //   ax,ay     — точка прив'язки (де об'єкт стоїть на землі)
 //   pvx,pvy   — точка, навколо якої віддзеркалюється
+//   tag       — тег тайла з редактора (напр. "Балка", "Сходи"); порожній рядок, якщо нема
 const placements = [];
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 for (const p of raw.placements) {
@@ -127,7 +128,7 @@ for (const p of raw.placements) {
   // flags: 1 flipX, 2 flipY, 4 isRoof, біти 3+ — поверх тайла (0 = не прив'язаний: земля/декор)
   const tFloor = Number.isFinite(p.floor) && p.floor >= 1 ? Math.min(15, Math.floor(p.floor)) : 0;
   const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0) | (tFloor << 3);
-  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py]);
+  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py, typeof p.tag === "string" ? p.tag : ""]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
 }
@@ -163,7 +164,7 @@ for (const c of raw.collisions) {
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
 fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions, spawns }));
-fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 2, name: raw.name, bounds, tiles, placements }));
+fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 3, name: raw.name, bounds, tiles, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));
@@ -171,5 +172,8 @@ fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collision
 const ruleCounts = {};
 for (const t of Object.values(tiles)) if (t.rule) ruleCounts[t.rule] = (ruleCounts[t.rule] || 0) + 1;
 console.log("Правила малювання (тайлів на правило):", JSON.stringify(ruleCounts));
+const tagCounts = {};
+for (const p of placements) if (p[10]) tagCounts[p[10]] = (tagCounts[p[10]] || 0) + 1;
+console.log("Теги (тайлів на тег):", JSON.stringify(tagCounts));
 console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${transitions.length} переходів, ${spawns.length} спавнів`);
 console.log("Межі:", bounds);

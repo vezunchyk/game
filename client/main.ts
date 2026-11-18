@@ -132,7 +132,7 @@ function frame(): void {
   for (const p of sortedPlayers) {
     chars.draw(ctx, p, now, p.id === myId);
     const rect: View = { left: p.x - 26, top: p.y - SPRITE_H - 2, right: p.x + 26, bottom: p.y + 8 };
-    map.drawOccludersOver(ctx, view, now, rect, p.y);
+    map.drawOccludersOver(ctx, view, now, rect, p.x, p.y, p.floor ?? 1);
   }
 
   // Дахи — поверх усього; над гравцем у будинку вони плавно зникають.

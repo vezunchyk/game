@@ -40,6 +40,9 @@ const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFoot
   overlay: { occludes: true, anyHeight: true, inFootprint: false },
 };
 
+/** Тег з редактора: балка над головою. Гравець у будинку (на поверсі 1) ЗАВЖДИ під нею. */
+const BEAM_TAG = "Балка";
+
 /** Прозорість першого поверху, коли гравець на поверсі 2+. */
 const LOWER_FLOOR_ALPHA = 0.3;
 
@@ -51,8 +54,8 @@ interface MapFile {
   format?: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   tiles: Record<string, TileInfo>;
-  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof,>>3=поверх), ax, ay, pvx, pvy] */
-  placements: [string, number, number, number, number, number, number, number, number, number][];
+  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof,>>3=поверх), ax, ay, pvx, pvy, tag] */
+  placements: [string, number, number, number, number, number, number, number, number, number, string][];
 }
 
 /** Один готовий до малювання тайл. */
@@ -73,6 +76,8 @@ export interface DrawItem {
   isRoof: boolean;
   /** Правило малювання з папки тайла (див. TILE_RULES). */
   rule: string;
+  /** Тег тайла з редактора (напр. "Балка"), порожній — нема. */
+  tag: string;
 }
 
 /** Верх одного будинку: усі його тайли зникають разом, коли гравець всередині. */
@@ -99,7 +104,7 @@ export class MapRenderer {
 
   async load(): Promise<void> {
     const map = (await (await fetch("/assets/map.json", { cache: "no-store" })).json()) as MapFile;
-    if (map.format !== 2) {
+    if (map.format !== 3) {
       // Клієнт і карта з різних версій — малювати нічого, інакше вийде "каша".
       const msg = "Версії не збігаються: map.json старий (format " + map.format + "), а клієнт новий. Онови всю гру з одного архіву.";
       const d = document.createElement("div");
@@ -125,13 +130,13 @@ export class MapRenderer {
 
     const upperItems: DrawItem[] = [];
     const basePts: [number, number][] = [];
-    for (const [id, x, y, z, key, flags, ax, ay, pvx, pvy] of map.placements) {
+    for (const [id, x, y, z, key, flags, ax, ay, pvx, pvy, tag] of map.placements) {
       const t = map.tiles[id]!;
       const item: DrawItem = {
         img: imgs.get(id)!, x, y, w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
         flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay,
-        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "",
+        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "", tag: tag ?? "",
       };
       // Верх будинку: дах і все, що належить поверху 2+ (за полем floor з редактора).
       if (item.isRoof || item.floor >= 2) upperItems.push(item);
@@ -143,6 +148,11 @@ export class MapRenderer {
         if (rule?.occludes && (rule.anyHeight || t.h >= OCCLUDER_MIN_H)) {
           this.occluders.push(item);
           if (rule.inFootprint) basePts.push([ax, ay]);
+        } else if (item.tag === BEAM_TAG) {
+          // Балка першого поверху: перекриває гравця, коли той у будинку (див. drawOccludersOver).
+          // У слід будинку НЕ входить — слід рахуємо лише за стінами.
+          this.occluders.push(item);
+          if (wall && t.h >= OCCLUDER_MIN_H) basePts.push([ax, ay]);
         } else if (wall && t.h >= OCCLUDER_MIN_H) { this.occluders.push(item); basePts.push([ax, ay]); }
       }
     }
@@ -182,10 +192,13 @@ export class MapRenderer {
    * Після того як гравця намальовано: перемальовує поверх нього стіни, що стоять ПЕРЕД ним
    * (їхня точка прив'язки нижче на екрані), лише в межах прямокутника гравця.
    */
-  drawOccludersOver(ctx: CanvasRenderingContext2D, v: View, now: number, rect: View, playerY: number): void {
+  drawOccludersOver(ctx: CanvasRenderingContext2D, v: View, now: number, rect: View, playerX: number, playerY: number, playerFloor = 1): void {
+    // Гравець у сліді будинку на поверсі 1 — балки завжди над ним (він під ними).
+    const underBeams = playerFloor < 2 && this.insideHouse(playerX, playerY);
     let clipped = false;
     for (const it of this.occluders) {
-      if (it.anchorY <= playerY) continue;
+      const beamOverPlayer = underBeams && it.tag === BEAM_TAG;
+      if (!beamOverPlayer && it.anchorY <= playerY) continue;
       if (it.x >= rect.right || it.x + it.w <= rect.left || it.y >= rect.bottom || it.y + it.h <= rect.top) continue;
       if (!clipped) {
         ctx.save();
@@ -197,6 +210,15 @@ export class MapRenderer {
       this.drawItem(ctx, it, v, now);
     }
     if (clipped) ctx.restore();
+  }
+
+  /** Чи стоїть точка у сліді якогось будинку (той самий слід, що ховає дах). */
+  private insideHouse(px: number, py: number): boolean {
+    for (const g of this.roofGroups) {
+      const f = g.fp;
+      if (f && px >= f.left - 8 && px <= f.right + 8 && py >= f.top - 8 && py <= f.bottom + 8) return true;
+    }
+    return false;
   }
 
   /** Верх будинків (верхні поверхи + дах) — поверх усього; над гравцем усередині плавно зникає. */
