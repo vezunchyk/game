@@ -1,9 +1,6 @@
-# ОДИН РАЗ створи в репозиторії файл .github/workflows/unpack.yml з цього вмісту
-# (github.com: Add file -> Create new file, в назві пиши .github/workflows/unpack.yml).
-#
-# Далі: заливаєш у корінь репозиторію stalker-mmo.zip (Add file -> Upload files).
-# GitHub сам розпакує його у файли проєкту, видалить архів і зробить коміт.
-# Сервер сам підхопить новий коміт (scripts/server-pull.sh).
+# Покласти в репозиторій як .github/workflows/unpack.yml
+# Робить: коли в корінь репозиторію залито stalker-mmo.zip, GitHub сам
+# розпаковує його у файли проєкту, видаляє архів і робить коміт.
 name: Розпакувати архів
 on:
   push:

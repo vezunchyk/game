@@ -6,7 +6,7 @@ import { isBlocked } from "../server/game/Collision.js";
 import { Player } from "../server/game/Player.js";
 import type { GameMap } from "../server/map/MapLoader.js";
 
-const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], spawns: [] };
+const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], byFloor: new Map(), transitions: [], spawns: [] };
 
 /** Симулює 1 секунду руху з наміром (ix, iy), повертає зсув у СВІТОВИХ одиницях. */
 function worldDistanceIn1s(ix: number, iy: number, map = openMap): number {
@@ -34,7 +34,8 @@ export function run(): void {
   const half = worldDistanceIn1s(0.5, 0);
   assert.ok(Math.abs(half - PLAYER_SPEED * 0.5) < 1, `половина нахилу: ${half}`);
   // 5. Стіна зупиняє, і "прошити" її на повній швидкості не можна
-  const wall: GameMap = { ...openMap, collisions: [{ pts: [40, -50, 44, -50, 44, 50, 40, 50], minX: 40, minY: -50, maxX: 44, maxY: 50 }] };
+  const wallPoly = { floor: 1, pts: [40, -50, 44, -50, 44, 50, 40, 50], minX: 40, minY: -50, maxX: 44, maxY: 50 };
+  const wall: GameMap = { ...openMap, collisions: [wallPoly], byFloor: new Map([[1, [wallPoly]]]) };
   const p = new Player(1, "t", 0, 0);
   p.inputX = 1; p.inputY = 0;
   for (let i = 0; i < 200; i++) { p.inputAt = Date.now(); stepPlayer(p, wall, Date.now(), 600); }

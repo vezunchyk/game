@@ -27,7 +27,7 @@ cd "$DIR"
 # 3. Залежності і збірка
 npm install --no-audit --no-fund
 npm run build
-grep -o "render-v6 [0-9: -]*" public/game.js | head -1 | sed "s/^/Клієнт зібрано: /"
+grep -o "render-v5 [0-9: -]*" public/game.js | head -1 | sed "s/^/Клієнт зібрано: /"
 
 # 4. Секрети з ~/zona.env (якщо є)
 if [ -f "$HOME/zona.env" ]; then set -a; . "$HOME/zona.env"; set +a; fi

@@ -35,8 +35,8 @@ interface MapFile {
   format?: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   tiles: Record<string, TileInfo>;
-  /** [tileId, ax, ay, z, flipX, isRoof, flipY, sortKey] — (ax, ay) = точка прив'язки тайла */
-  placements: [string, number, number, number, number, number, number, number][];
+  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof), ax, ay, pvx, pvy] */
+  placements: [string, number, number, number, number, number, number, number, number, number][];
 }
 
 /** Один готовий до малювання тайл. */
@@ -76,7 +76,7 @@ export class MapRenderer {
 
   async load(): Promise<void> {
     const map = (await (await fetch("/assets/map.json", { cache: "no-store" })).json()) as MapFile;
-    if (map.format !== 3) {
+    if (map.format !== 2) {
       // Клієнт і карта з різних версій — малювати нічого, інакше вийде "каша".
       const msg = "Версії не збігаються: map.json старий (format " + map.format + "), а клієнт новий. Онови всю гру з одного архіву.";
       const d = document.createElement("div");
@@ -102,17 +102,14 @@ export class MapRenderer {
 
     const upperItems: DrawItem[] = [];
     const basePts: [number, number][] = [];
-    for (const [id, ax, ay, z, fx, roof, fy, key] of map.placements) {
+    for (const [id, x, y, z, key, flags, ax, ay, pvx, pvy] of map.placements) {
       const t = map.tiles[id]!;
-      const w = t.w / t.frames;
-      // Як у редакторі: лівий верхній кут = точка прив'язки - розмір * pivot, округлено.
-      const x = Math.round(ax - w * t.px), y = Math.round(ay - t.h * t.py);
       const item: DrawItem = {
-        img: imgs.get(id)!, x, y, w, h: t.h,
+        img: imgs.get(id)!, x, y, w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
-        flipX: fx === 1, flipY: fy === 1, pvx: x + w * t.px, pvy: y + t.h * t.py, z, key, anchorY: ay,
+        flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay,
       };
-      if (roof === 1 || z >= UPPER_FLOOR_Z) upperItems.push(item);
+      if ((flags & 4) !== 0 || z >= UPPER_FLOOR_Z) upperItems.push(item);
       else {
         this.low.push(item);
         if (z >= OCCLUDER_MIN_Z && t.h >= OCCLUDER_MIN_H) { this.occluders.push(item); basePts.push([ax, ay]); }

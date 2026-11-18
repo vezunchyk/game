@@ -52,6 +52,7 @@ export interface PlayerState {
   nick: string;
   x: number;
   y: number;
+  floor: number; // поверх (1, 2, 3...)
   dir: number; // Dir
   mv: boolean; // true — іде (грає анімація ходьби)
 }

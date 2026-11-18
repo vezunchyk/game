@@ -79,17 +79,18 @@ for (const id of usedIds) {
     w, h, px: pv.x, py: pv.y, gx: ga.x, gy: ga.y,
     // анімація — горизонтальна стрічка кадрів; як у редакторі, крутиться лише з галочкою "Грати постійно"
     frames: t.animFrames ? Number(t.animFrames) : 1,
+    frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
-    // Без галочки "Грати постійно" кадр стоїть на місці (старий клієнт теж: період = майже вічність).
-    frameMs: t.animLoop ? (t.animFrameMs ? Number(t.animFrameMs) : 150) : 3600000,
   };
 }
 
-// --- 2. Розміщення ----------------------------------------------------------
-// ФОРМАТ 3 (сумісний зі старими клієнтами): [tileId, ax, ay, z, flipX, isRoof, flipY, sortKey]
-//   ax, ay  — ТОЧКА ПРИВ'ЯЗКИ тайла на карті, з урахуванням зсуву по ребру ромба (edgeAnchorT) —
-//             саме її редактор ставить у позицію pivot тайла;
-//   лівий верхній кут = (ax, ay) - розмір * pivot(tile.px, tile.py)  — робить сам клієнт.
+// --- 2. Розміщення: одразу рахуємо ТОЧНО ТАК, як редактор ---------------------
+// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy]
+//   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
+//   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
+//   flags     — 1: flipX, 2: flipY, 4: isRoof
+//   ax,ay     — точка прив'язки (де об'єкт стоїть на землі)
+//   pvx,pvy   — точка, навколо якої віддзеркалюється
 const placements = [];
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 for (const p of raw.placements) {
@@ -100,8 +101,9 @@ for (const p of raw.placements) {
   }
   const fw = t.w / t.frames;
   const ax = p.x + t.gx, ay = p.y + t.gy;
-  placements.push([p.tileId, ax, ay, p.z, p.flipX ? 1 : 0, p.isRoof ? 1 : 0, p.flipY ? 1 : 0, p.sortY != null ? p.sortY : p.y]);
   const x0 = Math.round(ax - fw * t.px), y0 = Math.round(ay - t.h * t.py);
+  const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0);
+  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
 }
@@ -111,16 +113,27 @@ const PAD = 16;
 const bounds = { minX: minX + PAD, minY: minY + PAD, maxX: maxX - PAD, maxY: maxY - PAD };
 
 // --- 4. Колізії і спавни для сервера ----------------------------------------
+// Поверх колізії: onFloor (1, 2, 3...); немає поля = поверх 1.
+const floorOf = (c) => (Number.isFinite(c.onFloor) && c.onFloor >= 1 ? Math.floor(c.onFloor) : 1);
 const collisions = raw.collisions
   .filter((c) => c.shape === "poly" && c.type === "solid")
-  .map((c) => ({ id: c.id, pts: c.pts.map((q) => [q.x, q.y]) }));
+  .map((c) => ({ id: c.id, floor: floorOf(c), pts: c.pts.map((q) => [q.x, q.y]) }));
+// Переходи між поверхами (сходи): гравець, що входить у зону, міняє поверх fromFloor <-> toFloor.
+const transitions = raw.collisions
+  .filter((c) => c.shape === "poly" && c.type === "floorTransition")
+  .map((c) => ({
+    id: c.id,
+    fromFloor: Number.isFinite(c.fromFloor) ? c.fromFloor : 1,
+    toFloor: Number.isFinite(c.toFloor) ? c.toFloor : 2,
+    pts: c.pts.map((q) => [q.x, q.y]),
+  }));
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
-fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, spawns }));
-fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 3, name: raw.name, bounds, tiles, placements }));
+fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions, spawns }));
+fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 2, name: raw.name, bounds, tiles, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));
 
-console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій, ${spawns.length} спавнів`);
+console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${transitions.length} переходів, ${spawns.length} спавнів`);
 console.log("Межі:", bounds);

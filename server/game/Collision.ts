@@ -7,7 +7,7 @@ import { FOOT_RADIUS_X, FOOT_RADIUS_Y } from "../../shared/constants.js";
 import type { GameMap, Poly } from "../map/MapLoader.js";
 
 /** Чи лежить точка всередині багатокутника (алгоритм променя). */
-function pointInPoly(px: number, py: number, poly: Poly): boolean {
+export function pointInPoly(px: number, py: number, poly: Poly): boolean {
   if (px < poly.minX || px > poly.maxX || py < poly.minY || py > poly.maxY) return false;
   const p = poly.pts;
   let inside = false;
@@ -27,11 +27,11 @@ const FOOT_SAMPLES: [number, number][] = [
   [FOOT_RADIUS_X * 0.7, -FOOT_RADIUS_Y * 0.7], [-FOOT_RADIUS_X * 0.7, -FOOT_RADIUS_Y * 0.7],
 ];
 
-/** true — в цій точці стояти НЕ можна (перешкода або вихід за межі світу). */
-export function isBlocked(map: GameMap, x: number, y: number): boolean {
+/** true — в цій точці на цьому поверсі стояти НЕ можна (перешкода поверху floor або вихід за межі світу). */
+export function isBlocked(map: GameMap, x: number, y: number, floor = 1): boolean {
   const b = map.bounds;
   if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) return true;
-  for (const poly of map.collisions) {
+  for (const poly of map.byFloor.get(floor) ?? []) {
     // Швидка відсічка по габариту (з запасом на розмір ніг)
     if (x + FOOT_RADIUS_X < poly.minX || x - FOOT_RADIUS_X > poly.maxX) continue;
     if (y + FOOT_RADIUS_Y < poly.minY || y - FOOT_RADIUS_Y > poly.maxY) continue;

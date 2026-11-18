@@ -11,7 +11,7 @@
 // ============================================================================
 import { Dir, INPUT_DEADZONE, ISO_Y_SCALE, PLAYER_SPEED, TICK_DT } from "../../shared/constants.js";
 import type { GameMap } from "../map/MapLoader.js";
-import { isBlocked } from "./Collision.js";
+import { isBlocked, pointInPoly } from "./Collision.js";
 import type { Player } from "./Player.js";
 
 /** Максимальний крок за одну підітерацію (пікселі) — щоб не "прошивати" тонкі стіни. */
@@ -68,11 +68,27 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
   const startX = player.x;
   const startY = player.y;
   for (let i = 0; i < steps; i++) {
-    if (!isBlocked(map, player.x + sx, player.y)) player.x += sx;
-    if (!isBlocked(map, player.x, player.y + sy)) player.y += sy;
+    if (!isBlocked(map, player.x + sx, player.y, player.floor)) player.x += sx;
+    if (!isBlocked(map, player.x, player.y + sy, player.floor)) player.y += sy;
   }
 
+  updateFloor(player, map);
   player.moving = player.x !== startX || player.y !== startY;
   // Напрямок беремо з бажаного руху (щоб персонаж повертався до стіни, а не завмирав)
   player.dir = dirFromVector(ux, uy);
+}
+
+/** Вхід у зону переходу (сходи) міняє поверх: fromFloor <-> toFloor. Міняється лише при вході ззовні. */
+export function updateFloor(player: Player, map: GameMap): void {
+  let inside = false;
+  for (const t of map.transitions) {
+    if (!pointInPoly(player.x, player.y, t)) continue;
+    inside = true;
+    if (!player.inTransition) {
+      if (player.floor === t.fromFloor) player.floor = t.toFloor;
+      else if (player.floor === t.toFloor) player.floor = t.fromFloor;
+    }
+    break;
+  }
+  player.inTransition = inside;
 }

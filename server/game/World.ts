@@ -19,7 +19,7 @@ export class World {
   /** Додає гравця у світ. Якщо збережена позиція не підходить — шукає вільне місце. */
   addPlayer(nick: string, savedX: number | null, savedY: number | null): Player {
     let x: number, y: number;
-    if (savedX !== null && savedY !== null && !isBlocked(this.map, savedX, savedY)) {
+    if (savedX !== null && savedY !== null && !isBlocked(this.map, savedX, savedY, 1)) {
       x = savedX; y = savedY;
     } else {
       ({ x, y } = this.findSpawn());
@@ -35,7 +35,7 @@ export class World {
 
   /** Спавн: з карти (якщо є вільна точка), інакше — спіраль навколо центру світу. */
   private findSpawn(): { x: number; y: number } {
-    const free = this.map.spawns.filter((s) => !isBlocked(this.map, s.x, s.y));
+    const free = this.map.spawns.filter((s) => !isBlocked(this.map, s.x, s.y, 1));
     if (free.length > 0) return free[Math.floor(Math.random() * free.length)]!;
 
     const b = this.map.bounds;
@@ -45,7 +45,7 @@ export class World {
       for (let a = 0; a < 16; a++) {
         const x = cx + Math.cos((a / 16) * Math.PI * 2) * r;
         const y = cy + Math.sin((a / 16) * Math.PI * 2) * r * 0.5;
-        if (!isBlocked(this.map, x, y)) return { x, y };
+        if (!isBlocked(this.map, x, y, 1)) return { x, y };
       }
     }
     return { x: cx, y: cy };
@@ -68,6 +68,7 @@ export class World {
         nick: p.nick,
         x: Math.round(p.x * 10) / 10,
         y: Math.round(p.y * 10) / 10,
+        floor: p.floor,
         dir: p.dir,
         mv: p.moving,
       });

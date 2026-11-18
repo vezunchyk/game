@@ -33,7 +33,7 @@ declare const __BUILD_ID__: string;
 // Мала мітка збірки в куті екрана (видно і в грі, і на скріншоті) — щоб одразу бачити, яка версія клієнта працює.
 {
   const tag = document.createElement("div");
-  tag.textContent = __BUILD_ID__ + " · map v3";
+  tag.textContent = __BUILD_ID__ + " · map v2";
   tag.style.cssText = "position:fixed;left:6px;bottom:4px;z-index:50;font:10px monospace;color:#fff;opacity:.55;pointer-events:none";
   document.body.appendChild(tag);
   $("login-status").textContent = "збірка: " + __BUILD_ID__;
