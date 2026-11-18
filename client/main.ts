@@ -33,7 +33,7 @@ declare const __BUILD_ID__: string;
 // Мала мітка збірки в куті екрана (видно і в грі, і на скріншоті) — щоб одразу бачити, яка версія клієнта працює.
 {
   const tag = document.createElement("div");
-  tag.textContent = __BUILD_ID__ + " · map v2";
+  tag.textContent = __BUILD_ID__ + " · map v3";
   tag.style.cssText = "position:fixed;left:6px;bottom:4px;z-index:50;font:10px monospace;color:#fff;opacity:.55;pointer-events:none";
   document.body.appendChild(tag);
   $("login-status").textContent = "збірка: " + __BUILD_ID__;
@@ -124,7 +124,8 @@ function frame(): void {
   const view: View = { left: camX - 8, top: camY - 8, right: camX + viewW + 8, bottom: camY + viewH + 8 };
 
   // Карта — у порядку редактора.
-  map.drawLow(ctx, view, now);
+  const myFloor = me?.floor ?? 1;
+  map.drawLow(ctx, view, now, myFloor);
 
   // Гравці (від дальніх до ближніх). Стіни, що стоять перед гравцем, перемальовуються поверх нього.
   const sortedPlayers = [...players].sort((a, b) => a.y - b.y);
@@ -135,7 +136,7 @@ function frame(): void {
   }
 
   // Дахи — поверх усього; над гравцем у будинку вони плавно зникають.
-  map.drawRoofs(ctx, view, now, me?.x ?? 0, me?.y ?? 0);
+  map.drawRoofs(ctx, view, now, me?.x ?? 0, me?.y ?? 0, myFloor);
 
   if (debug) drawDebug(view);
   requestAnimationFrame(frame);

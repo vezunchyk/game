@@ -27,6 +27,9 @@ const OCCLUDER_MIN_H = 40;
 /** Як швидко верх будинку зникає/з'являється (за секунду, 0..1). */
 const ROOF_FADE_PER_SEC = 5;
 
+/** Прозорість першого поверху, коли гравець на поверсі 2+. */
+const LOWER_FLOOR_ALPHA = 0.3;
+
 /** Тайли ближче одне до одного ніж це (світові px) вважаються одним будинком. */
 const ROOF_GROUP_GAP = 24;
 
@@ -35,7 +38,7 @@ interface MapFile {
   format?: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   tiles: Record<string, TileInfo>;
-  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof), ax, ay, pvx, pvy] */
+  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof,>>3=поверх), ax, ay, pvx, pvy] */
   placements: [string, number, number, number, number, number, number, number, number, number][];
 }
 
@@ -52,6 +55,9 @@ export interface DrawItem {
   key: number;
   /** Ордината точки прив'язки (де об'єкт стоїть на землі) — за нею порівнюємо з гравцем. */
   anchorY: number;
+  /** Поверх тайла (0 — земля/декор без поверху). */
+  floor: number;
+  isRoof: boolean;
 }
 
 /** Верх одного будинку: усі його тайли зникають разом, коли гравець всередині. */
@@ -60,7 +66,9 @@ interface RoofGroup {
   left: number; top: number; right: number; bottom: number;
   /** Слід будинку на землі (за точками прив'язки стін першого поверху). */
   fp: { left: number; top: number; right: number; bottom: number } | null;
+  /** Прозорість даху (isRoof/z>=35) і стін верхніх поверхів — окремо. */
   alpha: number;
+  alphaWalls: number;
 }
 
 export interface View { left: number; top: number; right: number; bottom: number; }
@@ -108,11 +116,15 @@ export class MapRenderer {
         img: imgs.get(id)!, x, y, w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
         flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay,
+        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z,
       };
-      if ((flags & 4) !== 0 || z >= UPPER_FLOOR_Z) upperItems.push(item);
+      // Верх будинку: дах і все, що належить поверху 2+ (за полем floor з редактора).
+      if (item.isRoof || item.floor >= 2) upperItems.push(item);
       else {
         this.low.push(item);
-        if (z >= OCCLUDER_MIN_Z && t.h >= OCCLUDER_MIN_H) { this.occluders.push(item); basePts.push([ax, ay]); }
+        // Стіна першого поверху (високий тайл): може закривати гравця. Без поля floor — старе правило за z.
+        const wall = item.floor === 1 || (item.floor === 0 && z >= OCCLUDER_MIN_Z);
+        if (wall && t.h >= OCCLUDER_MIN_H) { this.occluders.push(item); basePts.push([ax, ay]); }
       }
     }
 
@@ -136,8 +148,15 @@ export class MapRenderer {
   }
 
   /** Малює карту (все, крім верху будинків) у порядку редактора. */
-  drawLow(ctx: CanvasRenderingContext2D, v: View, now: number): void {
-    for (const it of this.low) this.drawItem(ctx, it, v, now);
+  drawLow(ctx: CanvasRenderingContext2D, v: View, now: number, playerFloor = 1): void {
+    // Гравець на поверсі 2+: перший поверх будинку (стіни/підлога з floor=1) напівпрозорий.
+    for (const it of this.low) {
+      if (playerFloor >= 2 && it.floor === 1) {
+        ctx.globalAlpha = LOWER_FLOOR_ALPHA;
+        this.drawItem(ctx, it, v, now);
+        ctx.globalAlpha = 1;
+      } else this.drawItem(ctx, it, v, now);
+    }
   }
 
   /**
@@ -162,18 +181,25 @@ export class MapRenderer {
   }
 
   /** Верх будинків (верхні поверхи + дах) — поверх усього; над гравцем усередині плавно зникає. */
-  drawRoofs(ctx: CanvasRenderingContext2D, v: View, now: number, px: number, py: number): void {
+  drawRoofs(ctx: CanvasRenderingContext2D, v: View, now: number, px: number, py: number, playerFloor = 1): void {
     const dt = this.lastRoofTime ? Math.min(0.1, (now - this.lastRoofTime) / 1000) : 0;
     this.lastRoofTime = now;
+    const step = (cur: number, target: number) => cur + Math.sign(target - cur) * Math.min(Math.abs(target - cur), ROOF_FADE_PER_SEC * dt);
     for (const g of this.roofGroups) {
       const f = g.fp;
       const inside = f !== null && px >= f.left - 8 && px <= f.right + 8 && py >= f.top - 8 && py <= f.bottom + 8;
-      const target = inside ? 0 : 1;
-      g.alpha += Math.sign(target - g.alpha) * Math.min(Math.abs(target - g.alpha), ROOF_FADE_PER_SEC * dt);
-      if (g.alpha <= 0.01) continue;
+      // Дах: зникає, коли гравець усередині сліду або на поверсі 2+.
+      g.alpha = step(g.alpha, inside || playerFloor >= 2 ? 0 : 1);
+      // Стіни поверху 2+: зникають, коли гравець усередині на поверсі 1 (він під ними). На поверсі 2+ — видно.
+      g.alphaWalls = step(g.alphaWalls, inside && playerFloor < 2 ? 0 : 1);
+      if (g.alpha <= 0.01 && g.alphaWalls <= 0.01) continue;
       if (g.left >= v.right || g.right <= v.left || g.top >= v.bottom || g.bottom <= v.top) continue;
-      ctx.globalAlpha = g.alpha;
-      for (const it of g.items) this.drawItem(ctx, it, v, now);
+      for (const it of g.items) {
+        const a = it.isRoof ? g.alpha : g.alphaWalls;
+        if (a <= 0.01) continue;
+        ctx.globalAlpha = a;
+        this.drawItem(ctx, it, v, now);
+      }
       ctx.globalAlpha = 1;
     }
   }
@@ -214,7 +240,7 @@ function groupRoofs(items: DrawItem[], order: (a: DrawItem, b: DrawItem) => numb
     const r = find(i);
     let g = groups.get(r);
     if (!g) {
-      g = { items: [], left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, fp: null, alpha: 1 };
+      g = { items: [], left: Infinity, top: Infinity, right: -Infinity, bottom: -Infinity, fp: null, alpha: 1, alphaWalls: 1 };
       groups.set(r, g);
     }
     g.items.push(it);

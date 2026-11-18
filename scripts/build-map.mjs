@@ -88,7 +88,7 @@ for (const id of usedIds) {
 // [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy]
 //   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
 //   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
-//   flags     — 1: flipX, 2: flipY, 4: isRoof
+//   flags     — 1: flipX, 2: flipY, 4: isRoof, flags>>3: поверх тайла (floor)
 //   ax,ay     — точка прив'язки (де об'єкт стоїть на землі)
 //   pvx,pvy   — точка, навколо якої віддзеркалюється
 const placements = [];
@@ -102,7 +102,9 @@ for (const p of raw.placements) {
   const fw = t.w / t.frames;
   const ax = p.x + t.gx, ay = p.y + t.gy;
   const x0 = Math.round(ax - fw * t.px), y0 = Math.round(ay - t.h * t.py);
-  const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0);
+  // flags: 1 flipX, 2 flipY, 4 isRoof, біти 3+ — поверх тайла (0 = не прив'язаний: земля/декор)
+  const tFloor = Number.isFinite(p.floor) && p.floor >= 1 ? Math.min(15, Math.floor(p.floor)) : 0;
+  const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0) | (tFloor << 3);
   placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
