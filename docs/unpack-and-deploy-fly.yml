@@ -1,0 +1,37 @@
+# ОДИН РАЗ створи в репозиторії файл .github/workflows/deploy.yml з цього вмісту
+# (на github.com: Add file -> Create new file, в назві пиши .github/workflows/deploy.yml).
+#
+# Далі робота така: заливаєш у корінь репозиторію stalker-mmo.zip (Add file -> Upload files).
+# GitHub сам: розпакує архів у файли проєкту, видалить архів, зробить коміт і задеплоїть на Fly.io.
+#
+# Потрібен секрет FLY_API_TOKEN: Settings -> Secrets and variables -> Actions -> New repository secret.
+name: Розпакувати архів і задеплоїти
+on:
+  push:
+    paths: ["stalker-mmo.zip"]
+permissions:
+  contents: write
+concurrency: deploy
+jobs:
+  unpack-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Розпакувати і замінити файли
+        run: |
+          mkdir /tmp/x && unzip -q stalker-mmo.zip -d /tmp/x
+          find . -mindepth 1 -maxdepth 1 ! -name .git ! -name .github -exec rm -rf {} +
+          cp -a /tmp/x/stalker-mmo/. ./
+      - name: Зберегти в репозиторії
+        run: |
+          git config user.name "zip-unpack"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Оновлення з архіву" || echo "Змін немає"
+          git push
+      # Деплой робимо в ЦЬОМУ Ж workflow: коміт від бота не запускає інші workflow.
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Деплой на Fly.io
+        run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

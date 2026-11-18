@@ -1,0 +1,17 @@
+# Налаштування Fly.io. Змін ім'я app на своє (воно має бути унікальним у Fly).
+app = "zona-game"
+primary_region = "fra"   # Франкфурт — найближче до України
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 7860          # той самий порт, що в Dockerfile (ENV PORT=7860)
+  force_https = true
+  auto_stop_machines = "off"    # світ гри живе в пам'яті — машина не повинна засинати
+  auto_start_machines = true
+  min_machines_running = 1      # рівно одна машина: гравці мають бути на одному сервері
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

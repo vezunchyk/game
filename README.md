@@ -1,0 +1,122 @@
+---
+title: Zona
+emoji: ☢️
+colorFrom: gray
+colorTo: green
+sdk: docker
+app_port: 7860
+---
+
+# ЗОНА — піксельна ММО РПГ
+
+Головний принцип: **сервер вирішує все**. Клієнт шле лише наміри
+(«джойстик нахилений сюди»), а позицію, швидкість, колізії, межі світу
+рахує сервер. Клієнт тільки малює те, що прислав сервер.
+
+## Структура
+
+```
+shared/                 Те, що спільне для сервера і клієнта
+  constants.ts            швидкість, тік-рейт, розміри спрайта, напрямки
+  protocol.ts             усі мережеві повідомлення (єдине місце правди)
+
+server/                 ВСЯ логіка гри
+  index.ts                точка входу: збирає частини докупи
+  config.ts               порт, ключі Supabase, ліміти
+  map/MapLoader.ts        завантаження колізій/меж/спавнів
+  game/Player.ts          дані гравця
+  game/Movement.ts        рух: нормалізація, ізометрія, стіни
+  game/Collision.ts       «чи можна стояти в цій точці»
+  game/World.ts           світ: гравці, спавн, знімок стану
+  game/GameLoop.ts        цикл з фіксованим кроком
+  network/GameServer.ts   HTTP + WebSocket, перевірка повідомлень
+  network/Auth.ts         вхід по ніку + секретний токен
+  db/PlayerStore.ts       збереження (пам'ять / Supabase)
+
+client/                 Тільки введення і малювання
+  main.ts                 вхід, ігровий цикл малювання, камера
+  net/Connection.ts       WebSocket
+  input/Joystick.ts       джойстик (один палець)
+  input/Keyboard.ts       WASD / стрілки
+  input/InputController   зводить введення в ОДИН вектор і шле серверу
+  render/MapRenderer.ts   малювання карти і порядок глибини
+  render/CharacterRenderer.ts   спрайт, 8 напрямків, анімація
+  render/Interpolation.ts       згладжування між знімками сервера
+
+scripts/build-map.mjs   TileWeaver json -> файли для сервера і клієнта
+tests/                  автотести руху і справжній сервер з клієнтами
+```
+
+## Як захищено від «подвійної швидкості»
+1. Input — це **стан** (один вектор на гравця), а не «зроби крок». Скільки б повідомлень не прийшло, вектор лише перезаписується.
+2. Рух рахується **рівно раз за тік** з фіксованим кроком.
+3. Довжина вектора обмежується до 1 на сервері (діагональ і читерські значення не швидші).
+4. Швидкість однакова у «світових» одиницях (ізометрія 2:1) в усіх напрямках.
+5. Джойстик і клавіатура **не додаються**: джойстик має пріоритет.
+Усе це перевіряють автотести (`npm test`).
+
+## Запуск локально
+```
+npm install
+npm run build-map -- шлях/до/tileweaver_Map.json   # коли міняєш карту
+npm run build
+npm start        # http://localhost:7860
+```
+Відкрий з `?debug` в адресі, щоб побачити червоні контури колізій поверх карти.
+
+## Оновлення карти
+Експортуєш json з TileWeaver -> `npm run build-map -- файл.json` -> заливаєш на Space.
+Точки спавну з редактора (`spawns`) підхопляться автоматично. Поки їх немає — спавн біля центру світу.
+
+## Hugging Face
+1. New Space -> SDK **Docker** -> залий усі файли цього проєкту (папки `public/assets` і `data` обов'язково).
+2. Settings -> Variables and secrets: `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` (service_role ключ, **Secret**, ніколи в клієнт).
+
+## Supabase: створи таблицю (SQL Editor)
+```sql
+create table players (
+  nick_lower text primary key,
+  nick text not null,
+  token_hash text not null,
+  x real,
+  y real,
+  created_at timestamptz default now()
+);
+alter table players enable row level security; -- політик немає: ходить лише сервер
+```
+Без Supabase гравці зберігаються в пам'яті (зникають при рестарті).
+
+## Автоматичний деплой на Hugging Face
+```
+pip install huggingface_hub
+export HF_TOKEN=hf_...            # токен із правом Write
+python scripts/deploy-hf.py ТВІЙ_НІК/назва-простору
+```
+Створює Space (Docker), за потреби ставить секрети Supabase зі змінних
+`SUPABASE_URL` / `SUPABASE_SERVICE_KEY` і заливає файли.
+З телефона зручно запускати в Google Colab: завантаж zip, `!unzip`, потім команди вище з `!`.
+
+## Свій сервер (Google Cloud VM)
+1. Дозволь порт у фаєрволі (в Cloud Shell):
+   `gcloud compute firewall-rules create zona --allow tcp:7860 --direction INGRESS`
+2. Завантаж `stalker-mmo.zip` у домашню папку VM (UPLOAD FILE у SSH-вікні).
+3. Перший раз: `unzip -oq ~/stalker-mmo.zip -d ~ && bash ~/stalker-mmo/scripts/server-update.sh`
+4. Кожне оновлення: завантаж новий zip і `bash ~/stalker-mmo/scripts/server-update.sh`
+Гра: `http://ЗОВНІШНЯ_IP:7860`. Секрети Supabase — у файлі `~/zona.env`.
+
+## Робота через GitHub (зручно з телефона)
+Файли живуть у GitHub, сервер сам їх підтягує (`scripts/server-sync.sh`).
+1. Створи репозиторій (public). Залий у нього `stalker-mmo.zip` (Add file -> Upload files).
+2. Створи файл `.github/workflows/unpack.yml` з вмісту `docs/unpack-workflow.yml`:
+   GitHub сам розпакує архів у файли проєкту. Нові версії = знову залити zip.
+3. На сервері один раз: `git clone <адреса> ~/zona && bash ~/zona/scripts/server-sync.sh --install`
+Далі сервер раз на хвилину перевіряє GitHub і сам оновлює та перезапускає гру.
+
+## Найпростіший спосіб для телефона: GitHub як «скринька» для zip
+Репозиторій може містити лише zip-архіви. Сервер бере найновіший за часом коміту, розпаковує і запускає.
+1. Залий zip у репозиторій (Add file -> Upload files). Старі zip краще видалити.
+2. На сервері один раз:
+   `git clone https://github.com/ТВІЙ_НІК/РЕПОЗИТОРІЙ ~/zona`
+   `unzip -oq "$(ls -t ~/zona/*.zip | head -n1)" -d ~`
+   `bash ~/stalker-mmo/scripts/server-sync.sh --install`
+3. Далі нові версії просто заливаєш zip на GitHub — за хвилину сервер оновиться сам.

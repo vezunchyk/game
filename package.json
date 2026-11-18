@@ -1,0 +1,24 @@
+{
+  "name": "stalker-mmo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Піксельна ММО РПГ по мотивах сталкера. Сервер вирішує все.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "node dist/server.js",
+    "dev": "npm run build && npm start",
+    "typecheck": "tsc --noEmit",
+    "test": "node scripts/run-tests.mjs",
+    "build-map": "node scripts/build-map.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.6.0"
+  }
+}
