@@ -24,8 +24,12 @@ const DIR_SPRITE: Record<number, { row: number; flip: boolean }> = {
 };
 
 const WALK_FPS = 10;
-/** Скільки пікселів спрайта знизу — під ногами (щоб ноги стояли саме в точці гравця). */
-const FEET_OFFSET = 3;
+/**
+ * Скільки пікселів кадру знизу «зайве» відносно ніг (щоб ноги стояли саме в точці гравця).
+ * У поточному спрайт-листі низ підошв — на 62-му рядку з 64 (кадр 0..63), тож підошва на 2 px вище краю кадру:
+ * dy = y - SPRITE_H + FEET_OFFSET ставить низ підошви на y-2, як і раніше. Змінюєш лист — перевір це число.
+ */
+const FEET_OFFSET = 0;
 
 export class CharacterRenderer {
   private sheet = new Image();
@@ -40,13 +44,16 @@ export class CharacterRenderer {
   draw(ctx: CanvasRenderingContext2D, p: PlayerState, now: number, isMe: boolean): void {
     const spr = DIR_SPRITE[p.dir] ?? DIR_SPRITE[Dir.S]!;
     const frame = p.mv ? Math.floor((now / 1000) * WALK_FPS) % SPRITE_FRAMES : 0;
-    const dx = Math.round(p.x - SPRITE_W / 2);
-    const dy = Math.round(p.y - SPRITE_H + FEET_OFFSET);
+    // Усе (тінь, спрайт, нік) прив'язане до ОДНІЄЇ цілої точки, щоб не було мікрозсувів.
+    const px = Math.round(p.x);
+    const py = Math.round(p.y);
+    const dx = px - SPRITE_W / 2;
+    const dy = py - SPRITE_H + FEET_OFFSET;
 
     // Тінь під ногами
     ctx.fillStyle = "rgba(0,0,0,0.3)";
     ctx.beginPath();
-    ctx.ellipse(Math.round(p.x), Math.round(p.y), 9, 4, 0, 0, Math.PI * 2);
+    ctx.ellipse(px, py, 9, 4, 0, 0, Math.PI * 2);
     ctx.fill();
 
     if (spr.flip) {
@@ -65,7 +72,7 @@ export class CharacterRenderer {
     ctx.fillStyle = isMe ? "#b8e986" : "#e8e8e8";
     ctx.strokeStyle = "rgba(0,0,0,0.8)";
     ctx.lineWidth = 2;
-    ctx.strokeText(p.nick, Math.round(p.x), dy - 2);
-    ctx.fillText(p.nick, Math.round(p.x), dy - 2);
+    ctx.strokeText(p.nick, px, dy - 2);
+    ctx.fillText(p.nick, px, dy - 2);
   }
 }

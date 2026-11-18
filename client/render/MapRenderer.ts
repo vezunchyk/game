@@ -36,12 +36,21 @@ const ROOF_FADE_PER_SEC = 5;
  *   anyHeight — для occludes: не вимагати високої картинки (тонка балка теж перекриває);
  *   inFootprint — якір враховується в слід будинку (де зникає дах).
  */
-const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFootprint: boolean }> = {
+const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFootprint: boolean; axis?: "L" | "R" }> = {
   overlay: { occludes: true, anyHeight: true, inFootprint: false },
+  // Стіни вздовж осей ізометрії. Глибину міряємо ВЛАСНОЮ віссю стіни, а не просто y:
+  //   wallL — стіна йде знизу-ліворуч угору-праворуч (папка "Ліво"), її глибина t = y + x/2;
+  //   wallR — стіна йде згори-ліворуч униз-праворуч (папка "право"), її глибина s = y - x/2.
+  // Інакше сегмент стіни збоку від гравця (він нижче на екрані) помилково перекриває гравця,
+  // що стоїть впритул до стіни.
+  wallL: { occludes: true, anyHeight: false, inFootprint: true, axis: "L" },
+  wallR: { occludes: true, anyHeight: false, inFootprint: true, axis: "R" },
 };
 
 /** Тег з редактора: балка над головою. Гравець у будинку (на поверсі 1) ЗАВЖДИ під нею. */
 const BEAM_TAG = "Балка";
+/** Тег з редактора: сходи між поверхами. */
+const STAIRS_TAG = "Сходи";
 
 /** Прозорість першого поверху, коли гравець на поверсі 2+. */
 const LOWER_FLOOR_ALPHA = 0.3;
@@ -71,6 +80,8 @@ export interface DrawItem {
   key: number;
   /** Ордината точки прив'язки (де об'єкт стоїть на землі) — за нею порівнюємо з гравцем. */
   anchorY: number;
+  /** Абсциса точки прив'язки (для глибини вздовж осей ізометрії). */
+  anchorX: number;
   /** Поверх тайла (0 — земля/декор без поверху). */
   floor: number;
   isRoof: boolean;
@@ -135,7 +146,7 @@ export class MapRenderer {
       const item: DrawItem = {
         img: imgs.get(id)!, x, y, w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
-        flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay,
+        flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay, anchorX: ax,
         floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "", tag: tag ?? "",
       };
       // Верх будинку: дах і все, що належить поверху 2+ (за полем floor з редактора).
@@ -180,7 +191,8 @@ export class MapRenderer {
   drawLow(ctx: CanvasRenderingContext2D, v: View, now: number, playerFloor = 1): void {
     // Гравець на поверсі 2+: перший поверх будинку (стіни/підлога з floor=1) напівпрозорий.
     for (const it of this.low) {
-      if (playerFloor >= 2 && it.floor === 1) {
+      // Сходи не напівпрозорі: по них гравець якраз піднімається на поверх 2.
+      if (playerFloor >= 2 && it.floor === 1 && it.tag !== STAIRS_TAG) {
         ctx.globalAlpha = LOWER_FLOOR_ALPHA;
         this.drawItem(ctx, it, v, now);
         ctx.globalAlpha = 1;
@@ -198,7 +210,7 @@ export class MapRenderer {
     let clipped = false;
     for (const it of this.occluders) {
       const beamOverPlayer = underBeams && it.tag === BEAM_TAG;
-      if (!beamOverPlayer && it.anchorY <= playerY) continue;
+      if (!beamOverPlayer && !isInFront(it, playerX, playerY)) continue;
       if (it.x >= rect.right || it.x + it.w <= rect.left || it.y >= rect.bottom || it.y + it.h <= rect.top) continue;
       if (!clipped) {
         ctx.save();
@@ -260,6 +272,14 @@ export class MapRenderer {
       ctx.drawImage(it.img, frame * it.w, 0, it.w, it.h, it.x, it.y, it.w, it.h);
     }
   }
+}
+
+/** Чи стоїть об'єкт ПЕРЕД гравцем (ближче до камери) — за віссю самого об'єкта. */
+function isInFront(it: DrawItem, px: number, py: number): boolean {
+  const axis = TILE_RULES[it.rule]?.axis;
+  if (axis === "L") return it.anchorY + it.anchorX / 2 > py + px / 2;
+  if (axis === "R") return it.anchorY - it.anchorX / 2 > py - px / 2;
+  return it.anchorY > py;
 }
 
 /** Збирає тайли верхніх поверхів і даху в будинки: ті, що торкаються (з запасом), — один будинок. */

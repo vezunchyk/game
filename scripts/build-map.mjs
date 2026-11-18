@@ -161,9 +161,29 @@ for (const c of raw.collisions) {
   } else continue;
   transitions.push({ id: c.id, onFloor, toFloor, pts: c.pts.map((q) => [q.x, q.y]) });
 }
+// Сходи: зона "вгору" (onFloor < toFloor) і найближча до неї зона "вниз" на ті самі поверхи — це два КІНЦІ
+// одних сходів. Поверх міняється на СЕРЕДИНІ сходів (див. server/game/Movement.ts), а не при вході в зону.
+// Зони, яким не знайшлась пара, лишаються звичайними переходами (миттєва зміна поверху при вході).
+const centroid = (pts) => [pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length];
+const stairs = [];
+const pairedIds = new Set();
+for (const up of transitions.filter((t) => t.toFloor > t.onFloor)) {
+  let best = null, bestD = Infinity;
+  for (const dn of transitions) {
+    if (pairedIds.has(dn.id) || dn.onFloor !== up.toFloor || dn.toFloor !== up.onFloor) continue;
+    const a = centroid(up.pts), c = centroid(dn.pts);
+    const d = Math.hypot(a[0] - c[0], a[1] - c[1]);
+    if (d < bestD) { bestD = d; best = dn; }
+  }
+  if (!best) continue;
+  pairedIds.add(up.id); pairedIds.add(best.id);
+  stairs.push({ id: up.id + "+" + best.id, low: up.onFloor, high: up.toFloor, a: centroid(up.pts), b: centroid(best.pts) });
+}
+const looseTransitions = transitions.filter((t) => !pairedIds.has(t.id));
+
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
-fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions, spawns }));
+fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, spawns }));
 fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 3, name: raw.name, bounds, tiles, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
@@ -175,5 +195,5 @@ console.log("Правила малювання (тайлів на правило
 const tagCounts = {};
 for (const p of placements) if (p[10]) tagCounts[p[10]] = (tagCounts[p[10]] || 0) + 1;
 console.log("Теги (тайлів на тег):", JSON.stringify(tagCounts));
-console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${transitions.length} переходів, ${spawns.length} спавнів`);
+console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${looseTransitions.length} переходів, ${stairs.length} сходів, ${spawns.length} спавнів`);
 console.log("Межі:", bounds);

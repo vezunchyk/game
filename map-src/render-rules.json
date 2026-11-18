@@ -4,6 +4,14 @@
     {
       "folder": "Балки",
       "rule": "overlay"
+    },
+    {
+      "folder": "Ліво",
+      "rule": "wallL"
+    },
+    {
+      "folder": "право",
+      "rule": "wallR"
     }
   ]
 }

@@ -6,7 +6,7 @@ import { isBlocked } from "../server/game/Collision.js";
 import { Player } from "../server/game/Player.js";
 import type { GameMap } from "../server/map/MapLoader.js";
 
-const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], byFloor: new Map(), transitions: [], spawns: [] };
+const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], byFloor: new Map(), transitions: [], stairs: [], spawns: [] };
 
 /** Симулює 1 секунду руху з наміром (ix, iy), повертає зсув у СВІТОВИХ одиницях. */
 function worldDistanceIn1s(ix: number, iy: number, map = openMap): number {

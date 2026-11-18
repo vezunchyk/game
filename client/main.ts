@@ -105,15 +105,18 @@ resize();
 function frame(): void {
   input.update();
   const now = performance.now();
-  const players = interp.sample();
+  // Позиції — у цілі світові пікселі (КОПІЇ, щоб не псувати буфер інтерполяції): і камера, і гравець
+  // спираються на одну цілу точку, тож персонаж не \"дрижить\" відносно центру екрана.
+  const players = interp.sample().map((p) => ({ ...p, x: Math.round(p.x), y: Math.round(p.y) }));
   const me = players.find((p) => p.id === myId);
 
   const dpr = window.devicePixelRatio || 1;
-  const scale = pickZoom(window.innerWidth) * dpr;
+  // Цілий масштаб (у фізичних пікселях): при дробовому (напр. 2.75 * 3) піксельна сітка \"пливе\".
+  const scale = Math.max(1, Math.round(pickZoom(window.innerWidth) * dpr));
   const viewW = canvas.width / scale;
   const viewH = canvas.height / scale;
-  const camX = Math.round((me?.x ?? 0) - viewW / 2);
-  const camY = Math.round((me?.y ?? 0) - 32 - viewH / 2);
+  const camX = (me?.x ?? 0) - Math.floor(viewW / 2);
+  const camY = (me?.y ?? 0) - 32 - Math.floor(viewH / 2);
 
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = "#0b0d0a";

@@ -26,6 +26,15 @@ export interface Transition extends Poly {
   toFloor: number;
 }
 
+/** Сходи між двома поверхами: відрізок a (низ, поверх low) -> b (верх, поверх high). */
+export interface Stair {
+  id: string;
+  low: number;
+  high: number;
+  ax: number; ay: number;
+  bx: number; by: number;
+}
+
 export interface Bounds {
   minX: number;
   minY: number;
@@ -40,6 +49,7 @@ export interface GameMap {
   /** Колізії, розкладені по поверхах: floors.get(n) — лише ті, що діють на поверсі n. */
   byFloor: Map<number, Poly[]>;
   transitions: Transition[];
+  stairs: Stair[];
   /** Точки спавну, задані в редакторі. Якщо порожньо — сервер шукає вільне місце сам. */
   spawns: { x: number; y: number }[];
 }
@@ -67,5 +77,10 @@ export function loadMap(file: string): GameMap {
   const transitions: Transition[] = (raw.transitions ?? []).map(
     (t: { pts: [number, number][]; onFloor: number; toFloor: number }) => ({ ...toPoly(t, t.onFloor), onFloor: t.onFloor, toFloor: t.toFloor }),
   );
-  return { name: raw.name, bounds: raw.bounds, collisions, byFloor, transitions, spawns: raw.spawns };
+  const stairs: Stair[] = (raw.stairs ?? []).map(
+    (s: { id: string; low: number; high: number; a: [number, number]; b: [number, number] }) => ({
+      id: s.id, low: s.low, high: s.high, ax: s.a[0], ay: s.a[1], bx: s.b[0], by: s.b[1],
+    }),
+  );
+  return { name: raw.name, bounds: raw.bounds, collisions, byFloor, transitions, stairs, spawns: raw.spawns };
 }

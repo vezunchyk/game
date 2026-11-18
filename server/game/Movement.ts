@@ -80,6 +80,7 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
 
 /** Вхід у зону зміни поверху (сходи): гравець з поверху onFloor переноситься на toFloor. Лише при вході ззовні. */
 export function updateFloor(player: Player, map: GameMap): void {
+  updateStairs(player, map);
   let inside = false;
   for (const t of map.transitions) {
     if (!pointInPoly(player.x, player.y, t)) continue;
@@ -90,4 +91,53 @@ export function updateFloor(player: Player, map: GameMap): void {
     }
   }
   player.inTransition = inside;
+}
+
+/** Півширина коридору сходів (px по перпендикуляру до їх осі). */
+const STAIR_HALF_WIDTH = 30;
+/**
+ * Де міняється поверх (u: 0 = низ сходів, 1 = верх). Міняємо БІЛЯ НИЗУ, а не посередині: на поверсі 1
+ * прохід по сходах перекритий колізіями вже на ~25% довжини (під сходами), а на поверсі 2 сходи вільні
+ * по всій довжині — тож піднявся трохи — вже на поверсі 2. Два пороги (гістерезис), щоб не смикало.
+ */
+const STAIR_UP_AT = 0.15;
+const STAIR_DOWN_AT = 0.1;
+/** Гравець \"сідає\" на сходи, лише зайшовши з кінця: з низу на нижньому поверсі, з верху на верхньому. */
+const STAIR_TOP_ENTRY = 0.65;
+
+/**
+ * Сходи: гравець іде по відрізку a -> b ПРЯМО НА ЕКРАНІ (сходи в картинці вже нахилені вгору), тому підйом
+ * малювати окремо не треба. Підходиш знизу і піднімаєшся — стаєш на поверх high; спускаєшся — назад на low.
+ * Заходити на сходи збоку (посередині) не можна — лише з кінця.
+ */
+export function updateStairs(player: Player, map: GameMap): void {
+  if (player.stair >= 0) {
+    const s = map.stairs[player.stair]!;
+    const { u, lat } = stairCoords(s, player.x, player.y);
+    if (Math.abs(lat) > STAIR_HALF_WIDTH || u < -0.1 || u > 1.1) {
+      // Зійшов зі сходів убік/з кінця: біля низу — повертаємо на нижній поверх, нагорі лишаємось на верхньому.
+      if (player.floor === s.high && u < 0.5) player.floor = s.low;
+      player.stair = -1;
+      return;
+    }
+    if (player.floor === s.low && u >= STAIR_UP_AT) player.floor = s.high;
+    else if (player.floor === s.high && u < STAIR_DOWN_AT) player.floor = s.low;
+    return;
+  }
+  for (let i = 0; i < map.stairs.length; i++) {
+    const s = map.stairs[i]!;
+    if (player.floor !== s.low && player.floor !== s.high) continue;
+    const { u, lat } = stairCoords(s, player.x, player.y);
+    if (Math.abs(lat) > STAIR_HALF_WIDTH || u < -0.1 || u > 1.1) continue;
+    const fromEnd = player.floor === s.low ? u < STAIR_UP_AT : u > STAIR_TOP_ENTRY;
+    if (fromEnd) { player.stair = i; return; }
+  }
+}
+
+/** Положення точки відносно сходів: u — вздовж (0 = низ, 1 = верх), lat — відстань убік (px). */
+function stairCoords(s: { ax: number; ay: number; bx: number; by: number }, x: number, y: number): { u: number; lat: number } {
+  const dx = s.bx - s.ax, dy = s.by - s.ay;
+  const len = Math.hypot(dx, dy) || 1;
+  const px = x - s.ax, py = y - s.ay;
+  return { u: (px * dx + py * dy) / (len * len), lat: (px * -dy + py * dx) / len };
 }
