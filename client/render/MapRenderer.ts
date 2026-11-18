@@ -27,13 +27,26 @@ const OCCLUDER_MIN_H = 40;
 /** Як швидко верх будинку зникає/з'являється (за секунду, 0..1). */
 const ROOF_FADE_PER_SEC = 5;
 
+/**
+ * ПРАВИЛА МАЛЮВАННЯ ОБ'ЄКТІВ. Папка тайла в редакторі -> назва правила (map-src/render-rules.json),
+ * тут — що це правило означає. Новий вид об'єкта (дверна балка, навіс, ...) = запис тут
+ * і рядок у render-rules.json; решту коду чіпати не треба.
+ *   occludes — об'єкт перемальовується ПОВЕРХ гравця, коли той стоїть вище якоря об'єкта
+ *              (гравець перед об'єктом — малюється поверх нього, за ним — під ним);
+ *   anyHeight — для occludes: не вимагати високої картинки (тонка балка теж перекриває);
+ *   inFootprint — якір враховується в слід будинку (де зникає дах).
+ */
+const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFootprint: boolean }> = {
+  overlay: { occludes: true, anyHeight: true, inFootprint: false },
+};
+
 /** Прозорість першого поверху, коли гравець на поверсі 2+. */
 const LOWER_FLOOR_ALPHA = 0.3;
 
 /** Тайли ближче одне до одного ніж це (світові px) вважаються одним будинком. */
 const ROOF_GROUP_GAP = 24;
 
-interface TileInfo { w: number; h: number; px: number; py: number; frames: number; frameMs: number; loop: number; }
+interface TileInfo { rule?: string; w: number; h: number; px: number; py: number; frames: number; frameMs: number; loop: number; }
 interface MapFile {
   format?: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
@@ -58,6 +71,8 @@ export interface DrawItem {
   /** Поверх тайла (0 — земля/декор без поверху). */
   floor: number;
   isRoof: boolean;
+  /** Правило малювання з папки тайла (див. TILE_RULES). */
+  rule: string;
 }
 
 /** Верх одного будинку: усі його тайли зникають разом, коли гравець всередині. */
@@ -116,7 +131,7 @@ export class MapRenderer {
         img: imgs.get(id)!, x, y, w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
         flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay,
-        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z,
+        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "",
       };
       // Верх будинку: дах і все, що належить поверху 2+ (за полем floor з редактора).
       if (item.isRoof || item.floor >= 2) upperItems.push(item);
@@ -124,7 +139,11 @@ export class MapRenderer {
         this.low.push(item);
         // Стіна першого поверху (високий тайл): може закривати гравця. Без поля floor — старе правило за z.
         const wall = item.floor === 1 || (item.floor === 0 && z >= OCCLUDER_MIN_Z);
-        if (wall && t.h >= OCCLUDER_MIN_H) { this.occluders.push(item); basePts.push([ax, ay]); }
+        const rule = TILE_RULES[item.rule];
+        if (rule?.occludes && (rule.anyHeight || t.h >= OCCLUDER_MIN_H)) {
+          this.occluders.push(item);
+          if (rule.inFootprint) basePts.push([ax, ay]);
+        } else if (wall && t.h >= OCCLUDER_MIN_H) { this.occluders.push(item); basePts.push([ax, ay]); }
       }
     }
 

@@ -78,17 +78,16 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
   player.dir = dirFromVector(ux, uy);
 }
 
-/** Вхід у зону переходу (сходи) міняє поверх: fromFloor <-> toFloor. Міняється лише при вході ззовні. */
+/** Вхід у зону зміни поверху (сходи): гравець з поверху onFloor переноситься на toFloor. Лише при вході ззовні. */
 export function updateFloor(player: Player, map: GameMap): void {
   let inside = false;
   for (const t of map.transitions) {
     if (!pointInPoly(player.x, player.y, t)) continue;
     inside = true;
-    if (!player.inTransition) {
-      if (player.floor === t.fromFloor) player.floor = t.toFloor;
-      else if (player.floor === t.toFloor) player.floor = t.fromFloor;
+    if (!player.inTransition && player.floor === t.onFloor) {
+      player.floor = t.toFloor;
+      break;
     }
-    break;
   }
   player.inTransition = inside;
 }

@@ -63,6 +63,27 @@ function tilePivot(t) {
   return { x: 0.5, y: 0.5 };
 }
 
+// --- Правила малювання за папкою тайла (map-src/render-rules.json, поряд із картою) ----------
+// Папка тайла в редакторі (разом з усіма батьківськими) -> назва правила для клієнта.
+const rulesFile = path.join(path.dirname(src), "render-rules.json");
+const ruleList = fs.existsSync(rulesFile) ? JSON.parse(fs.readFileSync(rulesFile, "utf8")).rules || [] : [];
+const folderById = new Map((raw.tileFolders || []).map((f) => [f.id, f]));
+function folderNames(t) {
+  const names = [];
+  for (let id = t.folderId, n = 0; id && n < 32; n++) {
+    const f = folderById.get(id);
+    if (!f) break;
+    names.push(f.name);
+    id = f.parentId;
+  }
+  return names;
+}
+function ruleFor(t) {
+  const names = folderNames(t);
+  for (const r of ruleList) if (names.includes(r.folder)) return r.rule;
+  return "";
+}
+
 // --- 1. Тайли, які реально використані на карті -----------------------------
 const usedIds = new Set(raw.placements.map((p) => p.tileId));
 const tiles = {};
@@ -81,6 +102,7 @@ for (const id of usedIds) {
     frames: t.animFrames ? Number(t.animFrames) : 1,
     frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
+    rule: ruleFor(t),
   };
 }
 
@@ -120,15 +142,24 @@ const floorOf = (c) => (Number.isFinite(c.onFloor) && c.onFloor >= 1 ? Math.floo
 const collisions = raw.collisions
   .filter((c) => c.shape === "poly" && c.type === "solid")
   .map((c) => ({ id: c.id, floor: floorOf(c), pts: c.pts.map((q) => [q.x, q.y]) }));
-// Переходи між поверхами (сходи): гравець, що входить у зону, міняє поверх fromFloor <-> toFloor.
-const transitions = raw.collisions
-  .filter((c) => c.shape === "poly" && c.type === "floorTransition")
-  .map((c) => ({
-    id: c.id,
-    fromFloor: Number.isFinite(c.fromFloor) ? c.fromFloor : 1,
-    toFloor: Number.isFinite(c.toFloor) ? c.toFloor : 2,
-    pts: c.pts.map((q) => [q.x, q.y]),
-  }));
+// Зони зміни поверху. Два способи позначити в редакторі, гра розуміє обидва:
+//   floorTransition: onFloor (де діє) + toFloor (куди переносить; fromFloor = onFloor);
+//   trigger з полем floor: onFloor (де діє) + floor (куди переносить).
+// Спрацьовує, коли гравець, що стоїть на поверсі onFloor, ВХОДИТЬ у зону ззовні.
+const isNum = (v) => Number.isFinite(v);
+const transitions = [];
+for (const c of raw.collisions) {
+  if (c.shape !== "poly") continue;
+  let onFloor, toFloor;
+  if (c.type === "floorTransition") {
+    onFloor = isNum(c.fromFloor) ? c.fromFloor : isNum(c.onFloor) ? c.onFloor : 1;
+    toFloor = isNum(c.toFloor) ? c.toFloor : onFloor + 1;
+  } else if (c.type === "trigger" && isNum(c.floor)) {
+    onFloor = isNum(c.onFloor) ? c.onFloor : 1;
+    toFloor = c.floor;
+  } else continue;
+  transitions.push({ id: c.id, onFloor, toFloor, pts: c.pts.map((q) => [q.x, q.y]) });
+}
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
 fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions, spawns }));
@@ -137,5 +168,8 @@ fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 2, name: raw
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));
 
+const ruleCounts = {};
+for (const t of Object.values(tiles)) if (t.rule) ruleCounts[t.rule] = (ruleCounts[t.rule] || 0) + 1;
+console.log("Правила малювання (тайлів на правило):", JSON.stringify(ruleCounts));
 console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${transitions.length} переходів, ${spawns.length} спавнів`);
 console.log("Межі:", bounds);

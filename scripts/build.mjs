@@ -2,6 +2,14 @@
 // scripts/build.mjs — збирає сервер (dist/server.js) і клієнт (public/game.js)
 // ============================================================================
 import { build } from "esbuild";
+import fs from "node:fs";
+import { execFileSync } from "node:child_process";
+
+// Карта: якщо є map-src/map.json (експорт TileWeaver) — перезбираємо з нього карту гри автоматично.
+// Тож для нової карти достатньо замінити ОДИН файл map-src/map.json.
+if (fs.existsSync("map-src/map.json")) {
+  execFileSync("node", ["scripts/build-map.mjs", "map-src/map.json"], { stdio: "inherit" });
+}
 
 await build({
   entryPoints: ["server/index.ts"], outfile: "dist/server.js",

@@ -20,7 +20,9 @@ export interface Poly {
 
 /** Зона переходу між поверхами (сходи). */
 export interface Transition extends Poly {
-  fromFloor: number;
+  /** Діє лише для гравця, що стоїть на цьому поверсі. */
+  onFloor: number;
+  /** Куди переносить гравця при вході в зону. */
   toFloor: number;
 }
 
@@ -63,7 +65,7 @@ export function loadMap(file: string): GameMap {
     byFloor.get(p.floor)!.push(p);
   }
   const transitions: Transition[] = (raw.transitions ?? []).map(
-    (t: { pts: [number, number][]; fromFloor: number; toFloor: number }) => ({ ...toPoly(t, t.fromFloor), fromFloor: t.fromFloor, toFloor: t.toFloor }),
+    (t: { pts: [number, number][]; onFloor: number; toFloor: number }) => ({ ...toPoly(t, t.onFloor), onFloor: t.onFloor, toFloor: t.toFloor }),
   );
   return { name: raw.name, bounds: raw.bounds, collisions, byFloor, transitions, spawns: raw.spawns };
 }
