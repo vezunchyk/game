@@ -1,6 +1,6 @@
 // Тести логіки руху: швидкість, діагоналі, стіни, захист від читів.
 import assert from "node:assert/strict";
-import { ISO_Y_SCALE, PLAYER_SPEED, TICK_RATE } from "../shared/constants.js";
+import { PLAYER_SPEED, TICK_RATE } from "../shared/constants.js";
 import { stepPlayer, sanitizeInput, dirFromVector } from "../server/game/Movement.js";
 import { isBlocked } from "../server/game/Collision.js";
 import { Player } from "../server/game/Player.js";
@@ -8,13 +8,13 @@ import type { GameMap } from "../server/map/MapLoader.js";
 
 const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], byFloor: new Map(), transitions: [], stairs: [], spawns: [] };
 
-/** Симулює 1 секунду руху з наміром (ix, iy), повертає зсув у СВІТОВИХ одиницях. */
+/** Симулює 1 секунду руху з наміром (ix, iy), повертає зсув НА ЕКРАНІ (швидкість однакова в усіх напрямках). */
 function worldDistanceIn1s(ix: number, iy: number, map = openMap): number {
   const p = new Player(1, "t", 0, 0);
   const s = sanitizeInput(ix, iy);
   p.inputX = s.x; p.inputY = s.y; p.inputAt = Date.now();
   for (let i = 0; i < TICK_RATE; i++) { p.inputAt = Date.now(); stepPlayer(p, map, Date.now(), 600); }
-  return Math.hypot(p.x, p.y / ISO_Y_SCALE);
+  return Math.hypot(p.x, p.y);
 }
 
 export function run(): void {

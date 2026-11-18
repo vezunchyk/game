@@ -6,10 +6,10 @@
 //  1. Вектор наміру ОДИН на гравця (новий input перезаписує старий, а не додається).
 //  2. Рух робиться РІВНО ОДИН раз за тік з фіксованим кроком TICK_DT.
 //  3. Вектор нормалізується (довжина <= 1), тож діагональ не швидша за пряму.
-//  4. Швидкість рахується в "світових" одиницях (ізометрія 2:1), тому
-//     вгору/вниз по екрану не повільніше і не швидше, ніж убік.
+//  4. Швидкість однакова НА ЕКРАНІ в усіх напрямках (вгору/вниз по екрану не повільніше, ніж убік).
+//     (Раніше рахувалась у "світових" одиницях ізометрії 2:1 — тоді вгору виходило вдвічі повільніше.)
 // ============================================================================
-import { Dir, INPUT_DEADZONE, ISO_Y_SCALE, PLAYER_SPEED, TICK_DT } from "../../shared/constants.js";
+import { Dir, INPUT_DEADZONE, PLAYER_SPEED, TICK_DT } from "../../shared/constants.js";
 import type { GameMap } from "../map/MapLoader.js";
 import { isBlocked, pointInPoly } from "./Collision.js";
 import type { Player } from "./Player.js";
@@ -53,10 +53,8 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
   const uy = player.inputY / len;
   const strength = Math.min(len, 1);
 
-  // Швидкість на екрані така, щоб у СВІТІ вона була однаковою в усіх напрямках:
-  // екранний крок = швидкість / sqrt(ux² + (uy/ISO_Y_SCALE)²)
-  const k = Math.hypot(ux, uy / ISO_Y_SCALE);
-  const screenSpeed = (PLAYER_SPEED * strength) / k;
+  // Швидкість на екрані однакова в усіх напрямках (ux, uy — одиничний вектор).
+  const screenSpeed = PLAYER_SPEED * strength;
 
   const totalX = ux * screenSpeed * TICK_DT;
   const totalY = uy * screenSpeed * TICK_DT;

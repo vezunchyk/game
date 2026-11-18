@@ -51,6 +51,8 @@ const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFoot
 const BEAM_TAG = "Балка";
 /** Тег з редактора: сходи між поверхами. */
 const STAIRS_TAG = "Сходи";
+/** Допуск (px) глибини стіни відносно гравця, див. isInFront. */
+const WALL_DEPTH_TOL = 6;
 
 /** Прозорість першого поверху, коли гравець на поверсі 2+. */
 const LOWER_FLOOR_ALPHA = 0.3;
@@ -277,8 +279,10 @@ export class MapRenderer {
 /** Чи стоїть об'єкт ПЕРЕД гравцем (ближче до камери) — за віссю самого об'єкта. */
 function isInFront(it: DrawItem, px: number, py: number): boolean {
   const axis = TILE_RULES[it.rule]?.axis;
-  if (axis === "L") return it.anchorY + it.anchorX / 2 > py + px / 2;
-  if (axis === "R") return it.anchorY - it.anchorX / 2 > py - px / 2;
+  // Допуск: колізії стін зроблені трохи позаду їхньої лінії основи, тож гравець впритул може опинитись
+  // на 1-3 px \"за\" лінією. Без допуску така стіна накрила б його ЦІЛКОМ.
+  if (axis === "L") return it.anchorY + it.anchorX / 2 > py + px / 2 + WALL_DEPTH_TOL;
+  if (axis === "R") return it.anchorY - it.anchorX / 2 > py - px / 2 + WALL_DEPTH_TOL;
   return it.anchorY > py;
 }
 
