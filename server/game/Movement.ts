@@ -9,8 +9,8 @@
 //  4. Швидкість однакова НА ЕКРАНІ в усіх напрямках (вгору/вниз по екрану не повільніше, ніж убік).
 //     (Раніше рахувалась у "світових" одиницях ізометрії 2:1 — тоді вгору виходило вдвічі повільніше.)
 // ============================================================================
-import { Dir, INPUT_DEADZONE, PLAYER_SPEED, TICK_DT } from "../../shared/constants.js";
-import type { GameMap } from "../map/MapLoader.js";
+import { Dir, INPUT_DEADZONE, ISO_Y_SCALE, PLAYER_SPEED, TICK_DT } from "../../shared/constants.js";
+import type { GameMap, Stair } from "../map/MapLoader.js";
 import { isBlocked, pointInPoly } from "./Collision.js";
 import type { Player } from "./Player.js";
 
@@ -42,6 +42,10 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
     player.inputY = 0;
   }
 
+  // Застряг усередині колізії (після зміни поверху, на тонкій стіні, у куті) — виштовхуємо ДО будь-якого руху,
+  // навіть коли джойстик відпущено: інакше з \"закритої\" точки не вийти в жодний бік.
+  if (player.stair < 0) unstuck(player, map);
+
   const len = Math.hypot(player.inputX, player.inputY);
   if (len === 0) {
     player.moving = false;
@@ -59,6 +63,15 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
   const totalX = ux * screenSpeed * TICK_DT;
   const totalY = uy * screenSpeed * TICK_DT;
 
+  // На сходах — рух по \"рейці\" (колізії стін там не діють, див. нижче).
+  if (player.stair >= 0) {
+    const x0 = player.x, y0 = player.y;
+    stepOnStairs(player, map, totalX, totalY);
+    player.moving = player.x !== x0 || player.y !== y0;
+    player.dir = dirFromVector(ux, uy);
+    return;
+  }
+
   // Рухаємось малими кроками, по осях окремо — так гравець "ковзає" вздовж стін.
   const steps = Math.max(1, Math.ceil(Math.hypot(totalX, totalY) / MAX_SUBSTEP));
   const sx = totalX / steps;
@@ -70,15 +83,22 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
     if (!isBlocked(map, player.x, player.y + sy, player.floor)) player.y += sy;
   }
 
+  tryEnterStairs(player, map, ux, uy);
   updateFloor(player, map);
+  if (player.stair < 0) unstuck(player, map);
   player.moving = player.x !== startX || player.y !== startY;
+  // Тисне, а стоїть на місці — і навколо майже немає вільного місця (кут, щілина): відкидаємо на кілька пікселів.
+  if (player.moving) player.pinTicks = 0;
+  else if (++player.pinTicks >= PIN_TICKS && player.stair < 0) {
+    if (clearance(map, player.x, player.y, player.floor) <= PIN_MAX_CLEARANCE) ejectFromPocket(player, map);
+    player.pinTicks = 0;
+  }
   // Напрямок беремо з бажаного руху (щоб персонаж повертався до стіни, а не завмирав)
   player.dir = dirFromVector(ux, uy);
 }
 
 /** Вхід у зону зміни поверху (сходи): гравець з поверху onFloor переноситься на toFloor. Лише при вході ззовні. */
 export function updateFloor(player: Player, map: GameMap): void {
-  updateStairs(player, map);
   let inside = false;
   for (const t of map.transitions) {
     if (!pointInPoly(player.x, player.y, t)) continue;
@@ -91,51 +111,142 @@ export function updateFloor(player: Player, map: GameMap): void {
   player.inTransition = inside;
 }
 
-/** Півширина коридору сходів (px по перпендикуляру до їх осі). */
-const STAIR_HALF_WIDTH = 30;
 /**
- * Де міняється поверх (u: 0 = низ сходів, 1 = верх). Міняємо БІЛЯ НИЗУ, а не посередині: на поверсі 1
- * прохід по сходах перекритий колізіями вже на ~25% довжини (під сходами), а на поверсі 2 сходи вільні
- * по всій довжині — тож піднявся трохи — вже на поверсі 2. Два пороги (гістерезис), щоб не смикало.
+ * СХОДИ. Усередині коридору сходів персонаж рухається по \"рейці\": вздовж осі низ -> верх (швидкість —
+ * проєкція джойстика на цю вісь) і трохи вбік (до STAIR_HALF_WIDTH). Колізії стін поряд зі сходами тут НЕ
+ * перевіряються — інакше стіна будинку, до якої притиснуті сходи, не пускає вгору. Зійти зі сходів можна лише
+ * з кінців: знизу — на поверх low, зверху — на плиту поверху high (там уже діють звичайні колізії).
+ * Поверх (для малювання й колізій) міняється посередині сходів.
  */
-const STAIR_UP_AT = 0.15;
-const STAIR_DOWN_AT = 0.1;
-/** Гравець \"сідає\" на сходи, лише зайшовши з кінця: з низу на нижньому поверсі, з верху на верхньому. */
-const STAIR_TOP_ENTRY = 0.65;
+const STAIR_HALF_WIDTH = 8;
+/** Скільки убік від осі ще \"засмоктує\" на сходи при вході (px). */
+const STAIR_MOUTH_WIDTH = 16;
+/** Зона входу вздовж осі біля кожного кінця (px: до кінця, за кінець). */
+const STAIR_MOUTH_IN = 10;
+const STAIR_MOUTH_OUT = 6;
+/** Наскільки джойстик має дивитись У СХОДИ (cos кута до осі), щоб зайти: проходячи повз, не залипаєш. */
+const STAIR_ENTER_DOT = 0.6;
 
-/**
- * Сходи: гравець іде по відрізку a -> b ПРЯМО НА ЕКРАНІ (сходи в картинці вже нахилені вгору), тому підйом
- * малювати окремо не треба. Підходиш знизу і піднімаєшся — стаєш на поверх high; спускаєшся — назад на low.
- * Заходити на сходи збоку (посередині) не можна — лише з кінця.
- */
-export function updateStairs(player: Player, map: GameMap): void {
-  if (player.stair >= 0) {
-    const s = map.stairs[player.stair]!;
-    const { u, lat } = stairCoords(s, player.x, player.y);
-    if (Math.abs(lat) > STAIR_HALF_WIDTH || u < -0.1 || u > 1.1) {
-      // Зійшов зі сходів убік/з кінця: біля низу — повертаємо на нижній поверх, нагорі лишаємось на верхньому.
-      if (player.floor === s.high && u < 0.5) player.floor = s.low;
-      player.stair = -1;
-      return;
-    }
-    if (player.floor === s.low && u >= STAIR_UP_AT) player.floor = s.high;
-    else if (player.floor === s.high && u < STAIR_DOWN_AT) player.floor = s.low;
-    return;
-  }
+function stairCoords(s: Stair, x: number, y: number): { along: number; lat: number } {
+  const px = x - s.ax, py = y - s.ay;
+  return { along: px * s.ex + py * s.ey, lat: px * s.nx + py * s.ny };
+}
+
+function placeOnStair(player: Player, s: Stair, along: number, lat: number): void {
+  player.x = s.ax + s.ex * along + s.nx * lat;
+  player.y = s.ay + s.ey * along + s.ny * lat;
+}
+
+/** Після звичайного руху: чи зайшов гравець у \"рот\" сходів, дивлячись на них. */
+export function tryEnterStairs(player: Player, map: GameMap, ux: number, uy: number): void {
   for (let i = 0; i < map.stairs.length; i++) {
     const s = map.stairs[i]!;
-    if (player.floor !== s.low && player.floor !== s.high) continue;
-    const { u, lat } = stairCoords(s, player.x, player.y);
-    if (Math.abs(lat) > STAIR_HALF_WIDTH || u < -0.1 || u > 1.1) continue;
-    const fromEnd = player.floor === s.low ? u < STAIR_UP_AT : u > STAIR_TOP_ENTRY;
-    if (fromEnd) { player.stair = i; return; }
+    const { along, lat } = stairCoords(s, player.x, player.y);
+    if (Math.abs(lat) > STAIR_MOUTH_WIDTH) continue;
+    const dot = ux * s.ex + uy * s.ey; // > 0 — дивиться вгору по сходах
+    if (player.floor === s.low && along >= -STAIR_MOUTH_OUT && along <= STAIR_MOUTH_IN && dot > STAIR_ENTER_DOT) {
+      player.stair = i;
+      placeOnStair(player, s, Math.max(0, along), Math.max(-STAIR_HALF_WIDTH, Math.min(STAIR_HALF_WIDTH, lat)));
+      return;
+    }
+    if (player.floor === s.high && along >= s.len - STAIR_MOUTH_IN && along <= s.len + STAIR_MOUTH_OUT && -dot > STAIR_ENTER_DOT) {
+      player.stair = i;
+      placeOnStair(player, s, Math.min(s.len, along), Math.max(-STAIR_HALF_WIDTH, Math.min(STAIR_HALF_WIDTH, lat)));
+      return;
+    }
   }
 }
 
-/** Положення точки відносно сходів: u — вздовж (0 = низ, 1 = верх), lat — відстань убік (px). */
-function stairCoords(s: { ax: number; ay: number; bx: number; by: number }, x: number, y: number): { u: number; lat: number } {
-  const dx = s.bx - s.ax, dy = s.by - s.ay;
-  const len = Math.hypot(dx, dy) || 1;
-  const px = x - s.ax, py = y - s.ay;
-  return { u: (px * dx + py * dy) / (len * len), lat: (px * -dy + py * dx) / len };
+/** Один крок по сходах: (dx, dy) — екранний зсув за тік. */
+function stepOnStairs(player: Player, map: GameMap, dx: number, dy: number): void {
+  const s = map.stairs[player.stair]!;
+  let { along, lat } = stairCoords(s, player.x, player.y);
+  along += dx * s.ex + dy * s.ey;
+  lat = Math.max(-STAIR_HALF_WIDTH, Math.min(STAIR_HALF_WIDTH, lat + dx * s.nx + dy * s.ny));
+
+  if (along <= 0) {
+    // Зійшов униз: на поверх low, далі звичайний рух.
+    placeOnStair(player, s, 0, lat);
+    player.floor = s.low;
+    player.stair = -1;
+    unstuck(player, map); // низ сходів притиснутий до стіни: одразу відкидаємо на вільне місце
+    return;
+  }
+  if (along >= s.len) {
+    placeOnStair(player, s, s.len, lat);
+    if (!isBlocked(map, player.x, player.y, s.high)) {
+      player.floor = s.high;
+      player.stair = -1;
+    }
+    return; // верх не вільний (немає підлоги/колізія) — лишаємось на останній сходинці
+  }
+  placeOnStair(player, s, along, lat);
+  player.floor = along < s.len * 0.5 ? s.low : s.high;
+}
+
+/** Найдальше, куди ще повертаємось на "останню вільну" точку (px); далі шукаємо найближче вільне місце. */
+const UNSTUCK_BACK_MAX = 24;
+/** Радіус пошуку вільного місця (px) і крок кільця. */
+const UNSTUCK_SEARCH_R = 64;
+
+/**
+ * Якщо гравець стоїть у зайнятій точці — відкидаємо його: спершу на останню вільну позицію (вона була
+ * кілька пікселів тому), інакше на найближче вільне місце по спіралі (Y стиснуто вдвічі — ізометрія).
+ * Якщо точка вільна — запам'ятовуємо її як "останню добру".
+ */
+export function unstuck(player: Player, map: GameMap): void {
+  if (!isBlocked(map, player.x, player.y, player.floor)) {
+    player.goodX = player.x; player.goodY = player.y; player.goodFloor = player.floor;
+    return;
+  }
+  if (
+    player.goodFloor === player.floor &&
+    Math.hypot(player.goodX - player.x, player.goodY - player.y) <= UNSTUCK_BACK_MAX &&
+    !isBlocked(map, player.goodX, player.goodY, player.floor)
+  ) {
+    player.x = player.goodX; player.y = player.goodY;
+    return;
+  }
+  for (let r = 1; r <= UNSTUCK_SEARCH_R; r++) {
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      const nx = player.x + Math.cos(a) * r, ny = player.y + Math.sin(a) * r * ISO_Y_SCALE;
+      if (!isBlocked(map, nx, ny, player.floor)) {
+        player.x = nx; player.y = ny;
+        player.goodX = nx; player.goodY = ny; player.goodFloor = player.floor;
+        return;
+      }
+    }
+  }
+}
+
+/** Скільки тіків тиску без руху вважаємо "застряг" (20 тіків/с => 0.25 с). */
+const PIN_TICKS = 5;
+/** Скільки з 16 напрямків навколо мають бути вільні, щоб місце вважалось нормальним (стіна: ~8, кут: ~4, щілина: ≤3). */
+const PIN_MAX_CLEARANCE = 5;
+const ROOMY_CLEARANCE = 8;
+
+/** Скільки з 16 напрямків на відстані 5 px від точки вільні (міра того, наскільки \"тісно\"). */
+function clearance(map: GameMap, x: number, y: number, floor: number): number {
+  let n = 0;
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2;
+    if (!isBlocked(map, x + Math.cos(a) * 5, y + Math.sin(a) * 5 * ISO_Y_SCALE, floor)) n++;
+  }
+  return n;
+}
+
+/** Відкидає гравця з кишені/кута на найближче місце, де довкола досить вільно (до ~24 px). */
+function ejectFromPocket(player: Player, map: GameMap): void {
+  for (let r = 2; r <= 24; r += 2) {
+    for (let k = 0; k < 24; k++) {
+      const a = (k / 24) * Math.PI * 2;
+      const nx = player.x + Math.cos(a) * r, ny = player.y + Math.sin(a) * r * ISO_Y_SCALE;
+      if (!isBlocked(map, nx, ny, player.floor) && clearance(map, nx, ny, player.floor) >= ROOMY_CLEARANCE) {
+        player.x = nx; player.y = ny;
+        player.goodX = nx; player.goodY = ny; player.goodFloor = player.floor;
+        return;
+      }
+    }
+  }
 }

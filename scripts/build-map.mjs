@@ -115,6 +115,9 @@ for (const id of usedIds) {
 //   pvx,pvy   — точка, навколо якої віддзеркалюється
 //   tag       — тег тайла з редактора (напр. "Балка", "Сходи"); порожній рядок, якщо нема
 const placements = [];
+// Підлога поверхів 2+ (плоскі тайли: плита, паркет): гравець на цьому поверсі може стояти лише на них (+ сходи).
+// Ромб верхньої грані тайла: центр (x0 + w/2, y0 + 16.5), півширини w/2, піввисота 16.5.
+const floorMask = [];
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 for (const p of raw.placements) {
   const t = tiles[p.tileId];
@@ -128,6 +131,7 @@ for (const p of raw.placements) {
   // flags: 1 flipX, 2 flipY, 4 isRoof, біти 3+ — поверх тайла (0 = не прив'язаний: земля/декор)
   const tFloor = Number.isFinite(p.floor) && p.floor >= 1 ? Math.min(15, Math.floor(p.floor)) : 0;
   const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0) | (tFloor << 3);
+  if (tFloor >= 2 && !p.isRoof && t.h < 40 && p.tag !== "Балка") floorMask.push([tFloor, x0 + fw / 2, y0 + 16.5, fw / 2, 16.5]);
   placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py, typeof p.tag === "string" ? p.tag : ""]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
@@ -177,13 +181,20 @@ for (const up of transitions.filter((t) => t.toFloor > t.onFloor)) {
   }
   if (!best) continue;
   pairedIds.add(up.id); pairedIds.add(best.id);
-  stairs.push({ id: up.id + "+" + best.id, low: up.onFloor, high: up.toFloor, a: centroid(up.pts), b: centroid(best.pts) });
+  const a0 = centroid(up.pts), b0 = centroid(best.pts);
+  // Кінець сходів зони c119 лежить на краю плити; рейку продовжуємо вздовж осі, поки не опинимось НА плиті верхнього поверху.
+  const len = Math.hypot(b0[0] - a0[0], b0[1] - a0[1]) || 1;
+  const ex = (b0[0] - a0[0]) / len, ey = (b0[1] - a0[1]) / len;
+  const onMask = (x, y) => floorMask.some(([f, cx, cy, hw, hh]) => f === up.toFloor && Math.abs(x - cx) / (hw + 8) + Math.abs(y - cy) / (hh + 4) <= 1);
+  let top = b0;
+  for (let k = 0; k <= 60; k++) { const q = [b0[0] + ex * k, b0[1] + ey * k]; if (onMask(q[0], q[1])) { top = [q[0] + ex * 2, q[1] + ey * 2]; break; } }
+  stairs.push({ id: up.id + "+" + best.id, low: up.onFloor, high: up.toFloor, a: a0, b: b0, top });
 }
 const looseTransitions = transitions.filter((t) => !pairedIds.has(t.id));
 
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
-fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, spawns }));
+fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, floorMask, spawns }));
 fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 3, name: raw.name, bounds, tiles, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
@@ -195,5 +206,5 @@ console.log("Правила малювання (тайлів на правило
 const tagCounts = {};
 for (const p of placements) if (p[10]) tagCounts[p[10]] = (tagCounts[p[10]] || 0) + 1;
 console.log("Теги (тайлів на тег):", JSON.stringify(tagCounts));
-console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${looseTransitions.length} переходів, ${stairs.length} сходів, ${spawns.length} спавнів`);
+console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${looseTransitions.length} переходів, ${stairs.length} сходів, ${floorMask.length} плиток підлоги поверхів 2+, ${spawns.length} спавнів`);
 console.log("Межі:", bounds);

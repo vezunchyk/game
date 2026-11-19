@@ -55,6 +55,7 @@ export interface PlayerState {
   floor: number; // поверх (1, 2, 3...)
   dir: number; // Dir
   mv: boolean; // true — іде (грає анімація ходьби)
+  st: boolean; // true — зараз на сходах (малюється як на верхньому поверсі)
 }
 
 /** Знімок світу, який сервер розсилає кожен тік. */

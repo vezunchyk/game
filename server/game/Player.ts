@@ -14,6 +14,12 @@ export class Player {
   inTransition = false;
   /** Індекс сходів, на яких гравець зараз (зайшов з одного з кінців), або -1. */
   stair = -1;
+  /** Остання позиція, де гравець стояв ВІЛЬНО (на поверсі goodFloor): сюди відкидаємо, якщо він застряг у колізії. */
+  goodX: number;
+  goodY: number;
+  goodFloor = 1;
+  /** Скільки тіків поспіль гравець тисне на джойстик, але стоїть на місці (для виштовхування з "кишені"). */
+  pinTicks = 0;
   dir: number = Dir.S;
   moving = false;
 
@@ -31,5 +37,7 @@ export class Player {
   ) {
     this.x = x;
     this.y = y;
+    this.goodX = x;
+    this.goodY = y;
   }
 }

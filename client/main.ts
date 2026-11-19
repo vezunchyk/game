@@ -128,18 +128,20 @@ function frame(): void {
 
   // Карта — у порядку редактора.
   const myFloor = me?.floor ?? 1;
-  map.drawLow(ctx, view, now, myFloor);
+  // "Нагорі": на поверсі 2+ або на сходах — тоді верх малюється під гравцем, а не поверх нього.
+  const myElevated = myFloor >= 2 || !!me?.st;
+  map.drawLow(ctx, view, now, myFloor, myElevated);
 
   // Гравці (від дальніх до ближніх). Стіни, що стоять перед гравцем, перемальовуються поверх нього.
   const sortedPlayers = [...players].sort((a, b) => a.y - b.y);
   for (const p of sortedPlayers) {
     chars.draw(ctx, p, now, p.id === myId);
     const rect: View = { left: p.x - 26, top: p.y - SPRITE_H - 2, right: p.x + 26, bottom: p.y + 8 };
-    map.drawOccludersOver(ctx, view, now, rect, p.x, p.y, p.floor ?? 1);
+    map.drawOccludersOver(ctx, view, now, rect, p.x, p.y, p.floor ?? 1, (p.floor ?? 1) >= 2 || !!p.st, myElevated);
   }
 
   // Дахи — поверх усього; над гравцем у будинку вони плавно зникають.
-  map.drawRoofs(ctx, view, now, me?.x ?? 0, me?.y ?? 0, myFloor);
+  map.drawRoofs(ctx, view, now, me?.x ?? 0, me?.y ?? 0, myFloor, myElevated);
 
   if (debug) drawDebug(view);
   requestAnimationFrame(frame);

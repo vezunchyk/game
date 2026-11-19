@@ -31,6 +31,7 @@ const FOOT_SAMPLES: [number, number][] = [
 export function isBlocked(map: GameMap, x: number, y: number, floor = 1): boolean {
   const b = map.bounds;
   if (x < b.minX || x > b.maxX || y < b.minY || y > b.maxY) return true;
+  if (floor >= 2 && !onFloorMask(map, floor, x, y)) return true;
   for (const poly of map.byFloor.get(floor) ?? []) {
     // Швидка відсічка по габариту (з запасом на розмір ніг)
     if (x + FOOT_RADIUS_X < poly.minX || x - FOOT_RADIUS_X > poly.maxX) continue;
@@ -40,4 +41,22 @@ export function isBlocked(map: GameMap, x: number, y: number, floor = 1): boolea
     }
   }
   return false;
+}
+
+/** Запас маски підлоги (px): ноги можуть трохи виступати за видимий край плити. */
+const MASK_PAD_X = 8;
+const MASK_PAD_Y = 4;
+
+/**
+ * Чи є під точкою підлога поверху floor. Якщо для цього поверху в карті немає жодного плоского тайла підлоги
+ * (стара карта) — вважаємо, що скрізь можна (як було раніше).
+ */
+export function onFloorMask(map: GameMap, floor: number, x: number, y: number): boolean {
+  let any = false;
+  for (const t of map.floorMask) {
+    if (t.floor !== floor) continue;
+    any = true;
+    if (Math.abs(x - t.cx) / (t.hw + MASK_PAD_X) + Math.abs(y - t.cy) / (t.hh + MASK_PAD_Y) <= 1) return true;
+  }
+  return !any;
 }

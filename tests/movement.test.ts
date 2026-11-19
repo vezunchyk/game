@@ -6,7 +6,7 @@ import { isBlocked } from "../server/game/Collision.js";
 import { Player } from "../server/game/Player.js";
 import type { GameMap } from "../server/map/MapLoader.js";
 
-const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], byFloor: new Map(), transitions: [], stairs: [], spawns: [] };
+const openMap: GameMap = { name: "open", bounds: { minX: -5000, minY: -5000, maxX: 5000, maxY: 5000 }, collisions: [], byFloor: new Map(), transitions: [], stairs: [], floorMask: [], spawns: [] };
 
 /** Симулює 1 секунду руху з наміром (ix, iy), повертає зсув НА ЕКРАНІ (швидкість однакова в усіх напрямках). */
 function worldDistanceIn1s(ix: number, iy: number, map = openMap): number {
@@ -55,5 +55,27 @@ export function run(): void {
   assert.equal(dirFromVector(1, 0), 2); // E
   assert.equal(dirFromVector(0, -1), 4); // N
   assert.equal(dirFromVector(-1, 0), 6); // W
+  // 9. Сходи: піднімаємось "по рейці" крізь колізію стіни збоку/поперек (вона не заважає), поверх міняється, зверху можна йти
+  const wallAcross = { floor: 1, pts: [-20, -45, 20, -45, 20, -35, -20, -35], minX: -20, minY: -45, maxX: 20, maxY: -35 };
+  const stairMap: GameMap = {
+    ...openMap, collisions: [wallAcross], byFloor: new Map([[1, [wallAcross]]]),
+    stairs: [{ id: "s", low: 1, high: 2, ax: 0, ay: 0, bx: 0, by: -80, len: 80, ex: 0, ey: -1, nx: 1, ny: 0 }],
+  };
+  const c = new Player(4, "t", 0, 6);
+  for (let i = 0; i < 60; i++) { c.inputX = 0; c.inputY = -1; c.inputAt = Date.now(); stepPlayer(c, stairMap, Date.now(), 600); }
+  assert.equal(c.floor, 2, "піднявся на поверх 2");
+  assert.ok(c.y < -80, `пройшов крізь сходи вгору, y=${c.y}`);
+  assert.equal(c.stair, -1, "зійшов зі сходів нагору");
+  // 10. Повз вхід у сходи горизонтально — не залипає
+  const d = new Player(5, "t", 20, 0);
+  for (let i = 0; i < 20; i++) { d.inputX = -1; d.inputY = 0; d.inputAt = Date.now(); stepPlayer(d, stairMap, Date.now(), 600); }
+  assert.equal(d.stair, -1);
+  assert.equal(d.floor, 1);
+  // 11. Застряг ВСЕРЕДИНІ колізії — його виштовхує на вільне місце (раніше назавжди застрягав)
+  const blob = { floor: 1, pts: [-30, -30, 30, -30, 30, 30, -30, 30], minX: -30, minY: -30, maxX: 30, maxY: 30 };
+  const blobMap: GameMap = { ...openMap, collisions: [blob], byFloor: new Map([[1, [blob]]]) };
+  const e = new Player(6, "t", 5, 3);
+  stepPlayer(e, blobMap, Date.now(), 600); // навіть без руху
+  assert.ok(Math.abs(e.x) > 30 + 7 || Math.abs(e.y) > 30 + 3, `лишився в колізії: ${e.x},${e.y}`);
   console.log("movement: OK");
 }

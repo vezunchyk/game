@@ -31,9 +31,18 @@ export interface Stair {
   id: string;
   low: number;
   high: number;
+  /** Низ сходів (початок рейки). */
   ax: number; ay: number;
+  /** Верх: кінець рейки, вже на плиті верхнього поверху. */
   bx: number; by: number;
+  /** Довжина рейки (px) і одиничні вектори: e — уздовж (вгору), n — убік. */
+  len: number;
+  ex: number; ey: number;
+  nx: number; ny: number;
 }
+
+/** Ромб підлоги поверху 2+: гравець на цьому поверсі стоїть лише всередині ромбів (див. isBlocked). */
+export interface FloorTile { floor: number; cx: number; cy: number; hw: number; hh: number; }
 
 export interface Bounds {
   minX: number;
@@ -50,6 +59,7 @@ export interface GameMap {
   byFloor: Map<number, Poly[]>;
   transitions: Transition[];
   stairs: Stair[];
+  floorMask: FloorTile[];
   /** Точки спавну, задані в редакторі. Якщо порожньо — сервер шукає вільне місце сам. */
   spawns: { x: number; y: number }[];
 }
@@ -78,9 +88,14 @@ export function loadMap(file: string): GameMap {
     (t: { pts: [number, number][]; onFloor: number; toFloor: number }) => ({ ...toPoly(t, t.onFloor), onFloor: t.onFloor, toFloor: t.toFloor }),
   );
   const stairs: Stair[] = (raw.stairs ?? []).map(
-    (s: { id: string; low: number; high: number; a: [number, number]; b: [number, number] }) => ({
-      id: s.id, low: s.low, high: s.high, ax: s.a[0], ay: s.a[1], bx: s.b[0], by: s.b[1],
-    }),
+    (s: { id: string; low: number; high: number; a: [number, number]; top: [number, number] }) => {
+      const dx = s.top[0] - s.a[0], dy = s.top[1] - s.a[1], len = Math.hypot(dx, dy) || 1;
+      const ex = dx / len, ey = dy / len;
+      return { id: s.id, low: s.low, high: s.high, ax: s.a[0], ay: s.a[1], bx: s.top[0], by: s.top[1], len, ex, ey, nx: -ey, ny: ex };
+    },
   );
-  return { name: raw.name, bounds: raw.bounds, collisions, byFloor, transitions, stairs, spawns: raw.spawns };
+  const floorMask: FloorTile[] = (raw.floorMask ?? []).map(
+    ([floor, cx, cy, hw, hh]: [number, number, number, number, number]) => ({ floor, cx, cy, hw, hh }),
+  );
+  return { name: raw.name, bounds: raw.bounds, collisions, byFloor, transitions, stairs, floorMask, spawns: raw.spawns };
 }

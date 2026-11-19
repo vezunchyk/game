@@ -112,6 +112,10 @@ export class MapRenderer {
   private low: DrawItem[] = [];
   /** Високі об'єкти першого поверху (підмножина low, той самий порядок). */
   private occluders: DrawItem[] = [];
+  /** Не-дахові тайли поверхів 2+ (підлога-плита, стіни, балки) у порядку редактора: малюються ДО гравця, що нагорі. */
+  private upperDeck: DrawItem[] = [];
+  /** З них — високі (стіни/балки): перемальовуються поверх гравця на поверсі 2+, якщо стоять перед ним. */
+  private upperOccluders: DrawItem[] = [];
   private roofGroups: RoofGroup[] = [];
   private lastRoofTime = 0;
 
@@ -152,7 +156,13 @@ export class MapRenderer {
         floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "", tag: tag ?? "",
       };
       // Верх будинку: дах і все, що належить поверху 2+ (за полем floor з редактора).
-      if (item.isRoof || item.floor >= 2) upperItems.push(item);
+      if (item.isRoof || item.floor >= 2) {
+        upperItems.push(item);
+        if (!item.isRoof) {
+          this.upperDeck.push(item);
+          if (t.h >= OCCLUDER_MIN_H || item.tag === BEAM_TAG) this.upperOccluders.push(item);
+        }
+      }
       else {
         this.low.push(item);
         // Стіна першого поверху (високий тайл): може закривати гравця. Без поля floor — старе правило за z.
@@ -175,6 +185,8 @@ export class MapRenderer {
       a.z - b.z || a.key - b.key;
     this.low.sort(byEditor);
     this.occluders.sort(byEditor);
+    this.upperDeck.sort(byEditor);
+    this.upperOccluders.sort(byEditor);
 
     this.roofGroups = groupRoofs(upperItems, byEditor);
     // Слід кожного будинку: бази стін першого поверху поблизу його верху.
@@ -190,7 +202,7 @@ export class MapRenderer {
   }
 
   /** Малює карту (все, крім верху будинків) у порядку редактора. */
-  drawLow(ctx: CanvasRenderingContext2D, v: View, now: number, playerFloor = 1): void {
+  drawLow(ctx: CanvasRenderingContext2D, v: View, now: number, playerFloor = 1, elevated = false): void {
     // Гравець на поверсі 2+: перший поверх будинку (стіни/підлога з floor=1) напівпрозорий.
     for (const it of this.low) {
       // Сходи не напівпрозорі: по них гравець якраз піднімається на поверх 2.
@@ -200,17 +212,26 @@ export class MapRenderer {
         ctx.globalAlpha = 1;
       } else this.drawItem(ctx, it, v, now);
     }
+    // Гравець нагорі (поверх 2+ або на сходах): підлога/стіни верхнього поверху ПІД ним, а не поверх (як було б з дахом).
+    if (elevated) for (const it of this.upperDeck) this.drawItem(ctx, it, v, now);
   }
 
   /**
    * Після того як гравця намальовано: перемальовує поверх нього стіни, що стоять ПЕРЕД ним
    * (їхня точка прив'язки нижче на екрані), лише в межах прямокутника гравця.
    */
-  drawOccludersOver(ctx: CanvasRenderingContext2D, v: View, now: number, rect: View, playerX: number, playerY: number, playerFloor = 1): void {
+  drawOccludersOver(
+    ctx: CanvasRenderingContext2D, v: View, now: number, rect: View, playerX: number, playerY: number,
+    playerFloor = 1, elevated = false, viewerElevated = false,
+  ): void {
+    // Гравець нагорі: його перекривають лише стіни верхнього поверху (стіни першого — нижче за нього).
+    // Якщо дивимось знизу (viewerElevated = false) — верх малюється поверх усього в drawRoofs, тут нічого.
+    if (elevated && !viewerElevated) return;
+    const list = elevated ? this.upperOccluders : this.occluders;
     // Гравець у сліді будинку на поверсі 1 — балки завжди над ним (він під ними).
-    const underBeams = playerFloor < 2 && this.insideHouse(playerX, playerY);
+    const underBeams = !elevated && playerFloor < 2 && this.insideHouse(playerX, playerY);
     let clipped = false;
-    for (const it of this.occluders) {
+    for (const it of list) {
       const beamOverPlayer = underBeams && it.tag === BEAM_TAG;
       if (!beamOverPlayer && !isInFront(it, playerX, playerY)) continue;
       if (it.x >= rect.right || it.x + it.w <= rect.left || it.y >= rect.bottom || it.y + it.h <= rect.top) continue;
@@ -236,7 +257,7 @@ export class MapRenderer {
   }
 
   /** Верх будинків (верхні поверхи + дах) — поверх усього; над гравцем усередині плавно зникає. */
-  drawRoofs(ctx: CanvasRenderingContext2D, v: View, now: number, px: number, py: number, playerFloor = 1): void {
+  drawRoofs(ctx: CanvasRenderingContext2D, v: View, now: number, px: number, py: number, playerFloor = 1, elevated = false): void {
     const dt = this.lastRoofTime ? Math.min(0.1, (now - this.lastRoofTime) / 1000) : 0;
     this.lastRoofTime = now;
     const step = (cur: number, target: number) => cur + Math.sign(target - cur) * Math.min(Math.abs(target - cur), ROOF_FADE_PER_SEC * dt);
@@ -250,6 +271,8 @@ export class MapRenderer {
       if (g.alpha <= 0.01 && g.alphaWalls <= 0.01) continue;
       if (g.left >= v.right || g.right <= v.left || g.top >= v.bottom || g.bottom <= v.top) continue;
       for (const it of g.items) {
+        // Нагорі підлогу й стіни верхнього поверху вже намальовано ДО гравця (drawLow) — тут лише дах.
+        if (elevated && !it.isRoof) continue;
         const a = it.isRoof ? g.alpha : g.alphaWalls;
         if (a <= 0.01) continue;
         ctx.globalAlpha = a;
