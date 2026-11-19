@@ -36,15 +36,8 @@ const ROOF_FADE_PER_SEC = 5;
  *   anyHeight — для occludes: не вимагати високої картинки (тонка балка теж перекриває);
  *   inFootprint — якір враховується в слід будинку (де зникає дах).
  */
-const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFootprint: boolean; axis?: "L" | "R" }> = {
+const TILE_RULES: Record<string, { occludes: boolean; anyHeight: boolean; inFootprint: boolean }> = {
   overlay: { occludes: true, anyHeight: true, inFootprint: false },
-  // Стіни вздовж осей ізометрії. Глибину міряємо ВЛАСНОЮ віссю стіни, а не просто y:
-  //   wallL — стіна йде знизу-ліворуч угору-праворуч (папка "Ліво"), її глибина t = y + x/2;
-  //   wallR — стіна йде згори-ліворуч униз-праворуч (папка "право"), її глибина s = y - x/2.
-  // Інакше сегмент стіни збоку від гравця (він нижче на екрані) помилково перекриває гравця,
-  // що стоїть впритул до стіни.
-  wallL: { occludes: true, anyHeight: false, inFootprint: true, axis: "L" },
-  wallR: { occludes: true, anyHeight: false, inFootprint: true, axis: "R" },
 };
 
 /** Тег з редактора: балка над головою. Гравець у будинку (на поверсі 1) ЗАВЖДИ під нею. */
@@ -53,6 +46,8 @@ const BEAM_TAG = "Балка";
 const STAIRS_TAG = "Сходи";
 /** Допуск (px) глибини стіни відносно гравця, див. isInFront. */
 const WALL_DEPTH_TOL = 6;
+/** Наскільки глибоко в товщу стіни (px, вздовж її нормалі) гравець ще "під балкою" над проходом. */
+const BEAM_DEPTH = 14;
 
 /** Прозорість першого поверху, коли гравець на поверсі 2+. */
 const LOWER_FLOOR_ALPHA = 0.3;
@@ -65,8 +60,8 @@ interface MapFile {
   format?: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   tiles: Record<string, TileInfo>;
-  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof,>>3=поверх), ax, ay, pvx, pvy, tag] */
-  placements: [string, number, number, number, number, number, number, number, number, number, string][];
+  /** [tileId, x0, y0, z, sortKey, flags(1=flipX,2=flipY,4=roof,>>3=поверх), ax, ay, pvx, pvy, tag, axis(0=?,1=L,2=R)] */
+  placements: [string, number, number, number, number, number, number, number, number, number, string, number][];
 }
 
 /** Один готовий до малювання тайл. */
@@ -91,6 +86,8 @@ export interface DrawItem {
   rule: string;
   /** Тег тайла з редактора (напр. "Балка"), порожній — нема. */
   tag: string;
+  /** Напрям стіни (з картинки тайла, вже з урахуванням віддзеркалення): 1 = L, 2 = R, 0 = невідомо/кут. */
+  axis: number;
 }
 
 /** Верх одного будинку: усі його тайли зникають разом, коли гравець всередині. */
@@ -121,7 +118,7 @@ export class MapRenderer {
 
   async load(): Promise<void> {
     const map = (await (await fetch("/assets/map.json", { cache: "no-store" })).json()) as MapFile;
-    if (map.format !== 3) {
+    if (map.format !== 4) {
       // Клієнт і карта з різних версій — малювати нічого, інакше вийде "каша".
       const msg = "Версії не збігаються: map.json старий (format " + map.format + "), а клієнт новий. Онови всю гру з одного архіву.";
       const d = document.createElement("div");
@@ -147,13 +144,13 @@ export class MapRenderer {
 
     const upperItems: DrawItem[] = [];
     const basePts: [number, number][] = [];
-    for (const [id, x, y, z, key, flags, ax, ay, pvx, pvy, tag] of map.placements) {
+    for (const [id, x, y, z, key, flags, ax, ay, pvx, pvy, tag, axis] of map.placements) {
       const t = map.tiles[id]!;
       const item: DrawItem = {
         img: imgs.get(id)!, x, y, w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
         flipX: (flags & 1) !== 0, flipY: (flags & 2) !== 0, pvx, pvy, z, key, anchorY: ay, anchorX: ax,
-        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "", tag: tag ?? "",
+        floor: flags >> 3, isRoof: (flags & 4) !== 0 || z >= UPPER_FLOOR_Z, rule: t.rule ?? "", tag: tag ?? "", axis: axis ?? 0,
       };
       // Верх будинку: дах і все, що належить поверху 2+ (за полем floor з редактора).
       if (item.isRoof || item.floor >= 2) {
@@ -228,11 +225,10 @@ export class MapRenderer {
     // Якщо дивимось знизу (viewerElevated = false) — верх малюється поверх усього в drawRoofs, тут нічого.
     if (elevated && !viewerElevated) return;
     const list = elevated ? this.upperOccluders : this.occluders;
-    // Гравець у сліді будинку на поверсі 1 — балки завжди над ним (він під ними).
-    const underBeams = !elevated && playerFloor < 2 && this.insideHouse(playerX, playerY);
     let clipped = false;
     for (const it of list) {
-      const beamOverPlayer = underBeams && it.tag === BEAM_TAG;
+      // Балка над дверним прорізом перекриває гравця, поки він У прорізі (під балкою), з будь-якого боку.
+      const beamOverPlayer = it.tag === BEAM_TAG && isUnderBeam(it, playerX, playerY);
       if (!beamOverPlayer && !isInFront(it, playerX, playerY)) continue;
       if (it.x >= rect.right || it.x + it.w <= rect.left || it.y >= rect.bottom || it.y + it.h <= rect.top) continue;
       if (!clipped) {
@@ -299,14 +295,32 @@ export class MapRenderer {
   }
 }
 
-/** Чи стоїть об'єкт ПЕРЕД гравцем (ближче до камери) — за віссю самого об'єкта. */
+/**
+ * Глибина в ізометрії: t = y + x/2 стала вздовж стіни осі L, s = y - x/2 — вздовж стіни осі R.
+ * Більше значення = ближче до камери.
+ */
+const depthT = (x: number, y: number): number => y + x / 2;
+const depthS = (x: number, y: number): number => y - x / 2;
+
+/**
+ * Чи стоїть об'єкт ПЕРЕД гравцем (ближче до камери).
+ *  - стіна осі L / R: порівнюємо глибину ВЛАСНОЮ віссю стіни (напрям береться з картинки тайла — для будь-якого будинку);
+ *  - кут / стовп / невідомий напрям: об'єкт перед гравцем, лише якщо ближчий за ОБОМА осями (конус знизу).
+ * Допуск WALL_DEPTH_TOL: колізії стін зроблені трохи позаду лінії основи, тож гравець впритул може опинитись
+ * на кілька px \"за\" лінією; без допуску така стіна накрила б його цілком.
+ */
 function isInFront(it: DrawItem, px: number, py: number): boolean {
-  const axis = TILE_RULES[it.rule]?.axis;
-  // Допуск: колізії стін зроблені трохи позаду їхньої лінії основи, тож гравець впритул може опинитись
-  // на 1-3 px \"за\" лінією. Без допуску така стіна накрила б його ЦІЛКОМ.
-  if (axis === "L") return it.anchorY + it.anchorX / 2 > py + px / 2 + WALL_DEPTH_TOL;
-  if (axis === "R") return it.anchorY - it.anchorX / 2 > py - px / 2 + WALL_DEPTH_TOL;
-  return it.anchorY > py;
+  const t = depthT(it.anchorX, it.anchorY) > depthT(px, py) + WALL_DEPTH_TOL;
+  const s = depthS(it.anchorX, it.anchorY) > depthS(px, py) + WALL_DEPTH_TOL;
+  return it.axis === 1 ? t : it.axis === 2 ? s : t && s;
+}
+
+/** Чи стоїть гравець ПІД балкою: у межах її довжини вздовж стіни і в товщині стіни (BEAM_DEPTH). */
+function isUnderBeam(it: DrawItem, px: number, py: number): boolean {
+  const half = it.w / 2 + 2;
+  if (it.axis === 1) return Math.abs(depthT(px, py) - depthT(it.anchorX, it.anchorY)) <= BEAM_DEPTH && Math.abs(depthS(px, py) - depthS(it.anchorX, it.anchorY)) <= half;
+  if (it.axis === 2) return Math.abs(depthS(px, py) - depthS(it.anchorX, it.anchorY)) <= BEAM_DEPTH && Math.abs(depthT(px, py) - depthT(it.anchorX, it.anchorY)) <= half;
+  return Math.abs(px - it.anchorX) <= half && Math.abs(py - it.anchorY) <= BEAM_DEPTH / 2;
 }
 
 /** Збирає тайли верхніх поверхів і даху в будинки: ті, що торкаються (з запасом), — один будинок. */

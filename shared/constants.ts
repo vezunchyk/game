@@ -20,8 +20,8 @@ export const ISO_Y_SCALE = 0.5;
 export const INPUT_DEADZONE = 0.15;
 
 /** Розмір "ніг" персонажа для колізій (півосі еліпса, екранні пікселі). */
-export const FOOT_RADIUS_X = 8;
-export const FOOT_RADIUS_Y = 4;
+export const FOOT_RADIUS_X = 6;
+export const FOOT_RADIUS_Y = 3;
 
 /** Розмір одного кадру спрайт-листа і кількість кадрів ходьби в рядку. */
 export const SPRITE_W = 48;

@@ -7,6 +7,7 @@
 // Запуск:  npm run build-map -- шлях/до/tileweaver_Map.json
 // ============================================================================
 import fs from "node:fs";
+import zlib from "node:zlib";
 import path from "node:path";
 
 const src = process.argv[2];
@@ -84,6 +85,47 @@ function ruleFor(t) {
   return "";
 }
 
+// --- Напрям стіни за формою картинки -----------------------------------------
+// Ізометрична стіна — паралелограм: вздовж осі L вона йде знизу-ліворуч угору-праворуч (y падає, коли x росте),
+// вздовж осі R — згори-ліворуч униз-праворуч. Напрям читаємо з самих пікселів (кореляція x і y непрозорих
+// пікселів) — тож працює для будь-яких тайлів і будь-яких будинків, незалежно від назв папок.
+// Повертає 1 (L), 2 (R) або 0 (кут/стовп/щось симетричне — напрям невідомий).
+function pngAxis(buf, frameW) {
+  let pos = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0;
+  const idat = [];
+  while (pos < buf.length) {
+    const len = buf.readUInt32BE(pos), type = buf.toString("ascii", pos + 4, pos + 8);
+    const data = buf.subarray(pos + 8, pos + 8 + len);
+    if (type === "IHDR") { w = data.readUInt32BE(0); h = data.readUInt32BE(4); depth = data[8]; ctype = data[9]; interlace = data[12]; }
+    else if (type === "IDAT") idat.push(data);
+    pos += 12 + len;
+  }
+  if (depth !== 8 || interlace !== 0 || (ctype !== 6 && ctype !== 4)) return 0; // очікуємо RGBA/GA 8 біт
+  const bpp = ctype === 6 ? 4 : 2, stride = w * bpp;
+  const raw = zlib.inflateSync(Buffer.concat(idat));
+  const px = Buffer.alloc(h * stride);
+  for (let y = 0; y < h; y++) {
+    const f = raw[y * (stride + 1)], src = y * (stride + 1) + 1, dst = y * stride;
+    for (let i = 0; i < stride; i++) {
+      const a = i >= bpp ? px[dst + i - bpp] : 0, b2 = y > 0 ? px[dst - stride + i] : 0, c = i >= bpp && y > 0 ? px[dst - stride + i - bpp] : 0;
+      let v = raw[src + i];
+      if (f === 1) v += a; else if (f === 2) v += b2; else if (f === 3) v += (a + b2) >> 1;
+      else if (f === 4) { const p = a + b2 - c, pa = Math.abs(p - a), pb = Math.abs(p - b2), pc = Math.abs(p - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? b2 : c; }
+      px[dst + i] = v & 255;
+    }
+  }
+  let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+  const fw = Math.min(frameW || w, w);
+  for (let y = 0; y < h; y++) for (let x = 0; x < fw; x++) {
+    if (px[y * stride + x * bpp + bpp - 1] < 128) continue;
+    n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
+  }
+  if (n < 20) return 0;
+  const cov = sxy / n - (sx / n) * (sy / n), vx = sxx / n - (sx / n) ** 2, vy = syy / n - (sy / n) ** 2;
+  const r = cov / Math.sqrt(vx * vy || 1);
+  return r < -0.2 ? 1 : r > 0.2 ? 2 : 0;
+}
+
 // --- 1. Тайли, які реально використані на карті -----------------------------
 const usedIds = new Set(raw.placements.map((p) => p.tileId));
 const tiles = {};
@@ -103,11 +145,13 @@ for (const id of usedIds) {
     frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
     rule: ruleFor(t),
+    axis: pngAxis(buf, w / (t.animFrames ? Number(t.animFrames) : 1)),
   };
 }
 
 // --- 2. Розміщення: одразу рахуємо ТОЧНО ТАК, як редактор ---------------------
-// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy, tag]
+// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy, tag, axis]
+//   axis      — напрям стіни ПІСЛЯ віддзеркалення: 1 = L (знизу-ліворуч угору-праворуч), 2 = R, 0 = невідомо
 //   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
 //   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
 //   flags     — 1: flipX, 2: flipY, 4: isRoof, flags>>3: поверх тайла (floor)
@@ -132,7 +176,7 @@ for (const p of raw.placements) {
   const tFloor = Number.isFinite(p.floor) && p.floor >= 1 ? Math.min(15, Math.floor(p.floor)) : 0;
   const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0) | (tFloor << 3);
   if (tFloor >= 2 && !p.isRoof && t.h < 40 && p.tag !== "Балка") floorMask.push([tFloor, x0 + fw / 2, y0 + 16.5, fw / 2, 16.5]);
-  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py, typeof p.tag === "string" ? p.tag : ""]);
+  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py, typeof p.tag === "string" ? p.tag : "", (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
 }
@@ -195,7 +239,7 @@ const looseTransitions = transitions.filter((t) => !pairedIds.has(t.id));
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
 fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, floorMask, spawns }));
-fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 3, name: raw.name, bounds, tiles, placements }));
+fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 4, name: raw.name, bounds, tiles, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));

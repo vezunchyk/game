@@ -76,6 +76,6 @@ export function run(): void {
   const blobMap: GameMap = { ...openMap, collisions: [blob], byFloor: new Map([[1, [blob]]]) };
   const e = new Player(6, "t", 5, 3);
   stepPlayer(e, blobMap, Date.now(), 600); // навіть без руху
-  assert.ok(Math.abs(e.x) > 30 + 7 || Math.abs(e.y) > 30 + 3, `лишився в колізії: ${e.x},${e.y}`);
+  assert.ok(!isBlocked(blobMap, e.x, e.y, 1), `лишився в колізії: ${e.x},${e.y}`);
   console.log("movement: OK");
 }

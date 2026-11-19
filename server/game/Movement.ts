@@ -78,10 +78,7 @@ export function stepPlayer(player: Player, map: GameMap, now: number, inputTimeo
   const sy = totalY / steps;
   const startX = player.x;
   const startY = player.y;
-  for (let i = 0; i < steps; i++) {
-    if (!isBlocked(map, player.x + sx, player.y, player.floor)) player.x += sx;
-    if (!isBlocked(map, player.x, player.y + sy, player.floor)) player.y += sy;
-  }
+  for (let i = 0; i < steps; i++) moveAndSlide(player, map, sx, sy);
 
   tryEnterStairs(player, map, ux, uy);
   updateFloor(player, map);
@@ -249,4 +246,35 @@ function ejectFromPocket(player: Player, map: GameMap): void {
       }
     }
   }
+}
+
+/**
+ * Крок із ковзанням уздовж перешкоди. Якщо пряме місце зайняте — оцінюємо нормаль перешкоди (звідки вона тисне)
+ * і йдемо вздовж неї. Рахуємо в "світових" координатах (Y розтягнуто вдвічі), тож вздовж діагональних стін
+ * ізометрії гравець ковзає плавно, а не \"сходинками\" по осях, — це і є різниця між \"то проходить у двері, то ні\".
+ */
+function moveAndSlide(player: Player, map: GameMap, sx: number, sy: number): void {
+  const f = player.floor;
+  const tx = player.x + sx, ty = player.y + sy;
+  if (!isBlocked(map, tx, ty, f)) { player.x = tx; player.y = ty; return; }
+
+  // Нормаль: напрямки (у світі), в яких навколо цілі зайнято — розвертаємо "від" них.
+  let nx = 0, ny = 0;
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2, cx = Math.cos(a), cy = Math.sin(a);
+    if (isBlocked(map, tx + cx * 3, ty + cy * 3 * ISO_Y_SCALE, f)) { nx -= cx; ny -= cy; }
+  }
+  const nl = Math.hypot(nx, ny);
+  if (nl > 1e-6) {
+    nx /= nl; ny /= nl;
+    const vx = sx, vy = sy / ISO_Y_SCALE; // швидкість у світових координатах
+    const dot = vx * nx + vy * ny;
+    if (dot < 0) {
+      const ax = vx - dot * nx, ay = (vy - dot * ny) * ISO_Y_SCALE; // уздовж перешкоди
+      if (!isBlocked(map, player.x + ax, player.y + ay, f)) { player.x += ax; player.y += ay; return; }
+    }
+  }
+  // Запасний варіант: по осях окремо.
+  if (!isBlocked(map, player.x + sx, player.y, f)) player.x += sx;
+  if (!isBlocked(map, player.x, player.y + sy, f)) player.y += sy;
 }
