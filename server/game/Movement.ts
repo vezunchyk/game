@@ -239,7 +239,8 @@ function ejectFromPocket(player: Player, map: GameMap): void {
     for (let k = 0; k < 24; k++) {
       const a = (k / 24) * Math.PI * 2;
       const nx = player.x + Math.cos(a) * r, ny = player.y + Math.sin(a) * r * ISO_Y_SCALE;
-      if (!isBlocked(map, nx, ny, player.floor) && clearance(map, nx, ny, player.floor) >= ROOMY_CLEARANCE) {
+      // Лише туди, куди можна дійти по прямій: відкидання не має переносити крізь стіну на другий бік.
+      if (!isBlocked(map, nx, ny, player.floor) && clearance(map, nx, ny, player.floor) >= ROOMY_CLEARANCE && segmentFree(map, player.x, player.y, nx, ny, player.floor)) {
         player.x = nx; player.y = ny;
         player.goodX = nx; player.goodY = ny; player.goodFloor = player.floor;
         return;
@@ -277,4 +278,14 @@ function moveAndSlide(player: Player, map: GameMap, sx: number, sy: number): voi
   // Запасний варіант: по осях окремо.
   if (!isBlocked(map, player.x + sx, player.y, f)) player.x += sx;
   if (!isBlocked(map, player.x, player.y + sy, f)) player.y += sy;
+}
+
+/** Чи вільна пряма між двома точками (перевірка кожні ~1.5 px). */
+function segmentFree(map: GameMap, x0: number, y0: number, x1: number, y1: number, floor: number): boolean {
+  const n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) / 1.5);
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    if (isBlocked(map, x0 + (x1 - x0) * t, y0 + (y1 - y0) * t, floor)) return false;
+  }
+  return true;
 }

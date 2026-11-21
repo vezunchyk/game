@@ -7,8 +7,11 @@
 // Запуск:  npm run build-map -- шлях/до/tileweaver_Map.json
 // ============================================================================
 import fs from "node:fs";
-import zlib from "node:zlib";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { decodePng, axisFromPicture, groundPoint, bottomHalfAxes } from "./lib/png.mjs";
+import { wallBands, pillarPoly } from "./lib/autocollide.mjs";
+import { classifyTile } from "./lib/folder-kinds.mjs";
 
 const src = process.argv[2];
 if (!src) {
@@ -18,9 +21,9 @@ if (!src) {
 const raw = JSON.parse(fs.readFileSync(src, "utf8"));
 
 const OUT_TILES = "public/assets/tiles";
-fs.rmSync(OUT_TILES, { recursive: true, force: true });
-fs.mkdirSync(OUT_TILES, { recursive: true });
 fs.mkdirSync("data", { recursive: true });
+// Файли пишемо ЛИШЕ в кінці й лише якщо перевірки пройшли — щоб помилка в карті не лишила гру з порожніми картинками.
+const pngOut = [];
 
 /** Читає ширину/висоту PNG з його заголовка (без бібліотек). */
 function pngSize(buf) {
@@ -64,67 +67,13 @@ function tilePivot(t) {
   return { x: 0.5, y: 0.5 };
 }
 
-// --- Правила малювання за папкою тайла (map-src/render-rules.json, поряд із картою) ----------
-// Папка тайла в редакторі (разом з усіма батьківськими) -> назва правила для клієнта.
-const rulesFile = path.join(path.dirname(src), "render-rules.json");
-const ruleList = fs.existsSync(rulesFile) ? JSON.parse(fs.readFileSync(rulesFile, "utf8")).rules || [] : [];
+// --- Види тайлів за папкою (map-src/folder-kinds.json) ------------------------------------
+// Єдина таблиця "папка -> вид" для всіх будинків. Лежить у репозиторії, а не поряд з картою.
+const kindsFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../map-src/folder-kinds.json");
+const cfg = JSON.parse(fs.readFileSync(kindsFile, "utf8"));
 const folderById = new Map((raw.tileFolders || []).map((f) => [f.id, f]));
-function folderNames(t) {
-  const names = [];
-  for (let id = t.folderId, n = 0; id && n < 32; n++) {
-    const f = folderById.get(id);
-    if (!f) break;
-    names.push(f.name);
-    id = f.parentId;
-  }
-  return names;
-}
-function ruleFor(t) {
-  const names = folderNames(t);
-  for (const r of ruleList) if (names.includes(r.folder)) return r.rule;
-  return "";
-}
-
-// --- Напрям стіни за формою картинки -----------------------------------------
-// Ізометрична стіна — паралелограм: вздовж осі L вона йде знизу-ліворуч угору-праворуч (y падає, коли x росте),
-// вздовж осі R — згори-ліворуч униз-праворуч. Напрям читаємо з самих пікселів (кореляція x і y непрозорих
-// пікселів) — тож працює для будь-яких тайлів і будь-яких будинків, незалежно від назв папок.
-// Повертає 1 (L), 2 (R) або 0 (кут/стовп/щось симетричне — напрям невідомий).
-function pngAxis(buf, frameW) {
-  let pos = 8, w = 0, h = 0, depth = 0, ctype = 0, interlace = 0;
-  const idat = [];
-  while (pos < buf.length) {
-    const len = buf.readUInt32BE(pos), type = buf.toString("ascii", pos + 4, pos + 8);
-    const data = buf.subarray(pos + 8, pos + 8 + len);
-    if (type === "IHDR") { w = data.readUInt32BE(0); h = data.readUInt32BE(4); depth = data[8]; ctype = data[9]; interlace = data[12]; }
-    else if (type === "IDAT") idat.push(data);
-    pos += 12 + len;
-  }
-  if (depth !== 8 || interlace !== 0 || (ctype !== 6 && ctype !== 4)) return 0; // очікуємо RGBA/GA 8 біт
-  const bpp = ctype === 6 ? 4 : 2, stride = w * bpp;
-  const raw = zlib.inflateSync(Buffer.concat(idat));
-  const px = Buffer.alloc(h * stride);
-  for (let y = 0; y < h; y++) {
-    const f = raw[y * (stride + 1)], src = y * (stride + 1) + 1, dst = y * stride;
-    for (let i = 0; i < stride; i++) {
-      const a = i >= bpp ? px[dst + i - bpp] : 0, b2 = y > 0 ? px[dst - stride + i] : 0, c = i >= bpp && y > 0 ? px[dst - stride + i - bpp] : 0;
-      let v = raw[src + i];
-      if (f === 1) v += a; else if (f === 2) v += b2; else if (f === 3) v += (a + b2) >> 1;
-      else if (f === 4) { const p = a + b2 - c, pa = Math.abs(p - a), pb = Math.abs(p - b2), pc = Math.abs(p - c); v += pa <= pb && pa <= pc ? a : pb <= pc ? b2 : c; }
-      px[dst + i] = v & 255;
-    }
-  }
-  let n = 0, sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
-  const fw = Math.min(frameW || w, w);
-  for (let y = 0; y < h; y++) for (let x = 0; x < fw; x++) {
-    if (px[y * stride + x * bpp + bpp - 1] < 128) continue;
-    n++; sx += x; sy += y; sxx += x * x; syy += y * y; sxy += x * y;
-  }
-  if (n < 20) return 0;
-  const cov = sxy / n - (sx / n) * (sy / n), vx = sxx / n - (sx / n) ** 2, vy = syy / n - (sy / n) ** 2;
-  const r = cov / Math.sqrt(vx * vy || 1);
-  return r < -0.2 ? 1 : r > 0.2 ? 2 : 0;
-}
+const errors = [], warnings = [];
+const AXIS_NAME = ["невідомо", "L", "R"];
 
 // --- 1. Тайли, які реально використані на карті -----------------------------
 const usedIds = new Set(raw.placements.map((p) => p.tileId));
@@ -133,35 +82,63 @@ for (const id of usedIds) {
   const t = raw.tiles[id];
   if (!t) continue;
   const buf = Buffer.from(t.dataURL.split(",")[1], "base64");
-  fs.writeFileSync(path.join(OUT_TILES, `${id}.png`), buf);
+  pngOut.push([id, buf]);
   const { w, h } = pngSize(buf);
   const pv = tilePivot(t);
   const ga = gridAnchorOffset(t);
-  if (Array.isArray(t.frames) && t.frames.length > 1) console.warn(`УВАГА: тайл ${id} має кадри різної ширини (tile.frames) — гра їх не підтримує`);
+  if (Array.isArray(t.frames) && t.frames.length > 1) warnings.push(`тайл ${id} має кадри різної ширини (tile.frames) — гра їх не підтримує`);
+  const frames = t.animFrames ? Number(t.animFrames) : 1;
+
+  // Вид, "внутрішня" позначка, світло/темно — з папки.
+  const info = classifyTile(t, folderById, cfg);
+  const label = `${id} «${t.name ?? ""}» (${[...info.chain].reverse().join("/") || "без папки"})`;
+  if (!info.kind) errors.push(`тайл ${label} використаний на карті, але його папки немає в map-src/folder-kinds.json`);
+
+  // Напрям: ЗА КАРТИНКОЮ (основне) і за папкою Світлі/Темні (друге джерело).
+  const png = decodePng(buf);
+  const gp = groundPoint(png, w / frames) || { bx: w / frames / 2, by: h };
+  const pic = axisFromPicture(png, w / frames);
+  const byShade = info.shade ? cfg.axisByShade[info.shade] : 0;
+  let axis = pic || byShade || 0;
+  if (cfg.axisKinds.includes(info.kind)) {
+    if (pic && byShade && pic !== byShade) {
+      errors.push(`тайл ${label}: картинка має вісь ${AXIS_NAME[pic]}, а папка «${info.shade === "light" ? "Світлі" : "Темні"}» вимагає ${AXIS_NAME[byShade]} — тайл у не тій папці`);
+    } else if (!axis && !info.axisless) {
+      warnings.push(`тайл ${label}: не вдалося визначити вісь (і це не кут) — малюватиметься як кут`);
+    }
+  }
+  // Заготовка під крок 2: ЄДИНА поведінка за видом. Поки клієнт розуміє лише старий міст (rule/tag).
   tiles[id] = {
     w, h, px: pv.x, py: pv.y, gx: ga.x, gy: ga.y,
     // анімація — горизонтальна стрічка кадрів; як у редакторі, крутиться лише з галочкою "Грати постійно"
-    frames: t.animFrames ? Number(t.animFrames) : 1,
+    gbx: gp.bx, gby: gp.by,
+    ha: bottomHalfAxes(png, w / frames),
+    frames,
     frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
-    rule: ruleFor(t),
-    axis: pngAxis(buf, w / (t.animFrames ? Number(t.animFrames) : 1)),
+    kind: info.kind,
+    interior: info.interior ? 1 : 0,
+    shade: info.shade,
+    axis,
   };
 }
 
 // --- 2. Розміщення: одразу рахуємо ТОЧНО ТАК, як редактор ---------------------
-// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy, tag, axis]
+// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy, axis]
 //   axis      — напрям стіни ПІСЛЯ віддзеркалення: 1 = L (знизу-ліворуч угору-праворуч), 2 = R, 0 = невідомо
 //   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
 //   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
 //   flags     — 1: flipX, 2: flipY, 4: isRoof, flags>>3: поверх тайла (floor)
-//   ax,ay     — точка прив'язки (де об'єкт стоїть на землі)
+//   ax,ay     — ЗЕМЛЯ під об'єктом: центр нижнього краю видимої частини картинки (за нею рахується глибина;
+//               якір з редактора для цього не годиться: у дверей він посередині, у балок угорі). Балка успадковує
+//               точку від найближчих дверей/рамки/стіни під нею.
 //   pvx,pvy   — точка, навколо якої віддзеркалюється
-//   tag       — тег тайла з редактора (напр. "Балка", "Сходи"); порожній рядок, якщо нема
 const placements = [];
+const warnedNoCollision = new Set();
 // Підлога поверхів 2+ (плоскі тайли: плита, паркет): гравець на цьому поверсі може стояти лише на них (+ сходи).
 // Ромб верхньої грані тайла: центр (x0 + w/2, y0 + 16.5), півширини w/2, піввисота 16.5.
 const floorMask = [];
+const autoPolys = []; // автоколізія: { id, floor, pts }
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 for (const p of raw.placements) {
   const t = tiles[p.tileId];
@@ -175,10 +152,59 @@ for (const p of raw.placements) {
   // flags: 1 flipX, 2 flipY, 4 isRoof, біти 3+ — поверх тайла (0 = не прив'язаний: земля/декор)
   const tFloor = Number.isFinite(p.floor) && p.floor >= 1 ? Math.min(15, Math.floor(p.floor)) : 0;
   const flags = (p.flipX ? 1 : 0) | (p.flipY ? 2 : 0) | (p.isRoof ? 4 : 0) | (tFloor << 3);
-  if (tFloor >= 2 && !p.isRoof && t.h < 40 && p.tag !== "Балка") floorMask.push([tFloor, x0 + fw / 2, y0 + 16.5, fw / 2, 16.5]);
-  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, ax, ay, x0 + fw * t.px, y0 + t.h * t.py, typeof p.tag === "string" ? p.tag : "", (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis]);
+  if (tFloor >= 2 && !p.isRoof && t.kind === "floor") floorMask.push([tFloor, x0 + fw / 2, y0 + 16.5, fw / 2, 16.5]);
+  const pvx = x0 + fw * t.px, pvy = y0 + t.h * t.py;
+  let gx = x0 + t.gbx;
+  const gy = y0 + t.gby;
+  if (p.flipX) gx = 2 * pvx - gx; // віддзеркалення навколо pivot, як при малюванні
+  // Автоколізія з виду тайла (стіни/огорожа — смуга за лінією основи, кути — з форми низу; стовпи — коло).
+  const lvl = Math.max(1, tFloor);
+  const cc = cfg.collision || {};
+  if ((t.kind === "wall" || t.kind === "fence") && !p.isRoof) {
+    if (!t.axis && !t.ha[0] && !t.ha[1]) warnedNoCollision.add(`${p.tileId} «${tiles[p.tileId]?.name ?? ""}»`);
+    // Пряма стіна (вісь за картинкою відома) — суцільна смуга; кут (вісь 0) — дві смуги за формою низу.
+    const halves = t.axis ? [t.axis, t.axis] : t.ha;
+    wallBands(gx, gy, fw, halves, !!p.flipX, (cc[t.kind] || { thickness: 8 }).thickness).forEach((pts, i) =>
+      autoPolys.push({ id: `auto:${p.id ?? p.tileId}:${i}`, floor: lvl, pts }));
+  } else if (t.kind === "pillar") {
+    autoPolys.push({ id: `auto:${p.id ?? p.tileId}`, floor: lvl, pts: pillarPoly(gx, gy, (cc.pillar || { radius: 5 }).radius) });
+  }
+  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, gx, gy, pvx, pvy, (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
+}
+
+// Балка висить над проходом і до землі не торкається, тож її "земля" береться від того, що під нею:
+// найближчих (по x) дверей, потім рамки дверей, потім стіни тієї ж осі.
+for (const pl of placements) {
+  if (tiles[pl[0]].kind !== "beam") continue;
+  let best = null, bestScore = Infinity;
+  for (const o of placements) {
+    const k = tiles[o[0]].kind;
+    const prio = k === "door" ? 0 : k === "door_frame" ? 1 : k === "wall" ? 2 : -1;
+    if (prio < 0 || o[10] !== pl[10] || o[7] <= pl[7]) continue; // під балкою, тієї ж осі
+    const dx = Math.abs(o[6] - pl[6]);
+    if (dx > (prio === 2 ? 64 : 24)) continue; // двері/рамка — майже під балкою; стіна — може бути збоку від проходу
+    const score = prio * 1000 + dx;
+    if (score < bestScore) { bestScore = score; best = o; }
+  }
+  if (best) {
+    // Балка висить рівно над своєю точкою на землі: та сама екранна x, а глибина — лінії носія (стіни/дверей).
+    pl[7] = pl[10] === 2 ? (best[7] - best[6] / 2) + pl[6] / 2 : (best[7] + best[6] / 2) - pl[6] / 2;
+  }
+  else warnings.push(`балка в (${Math.round(pl[6])}, ${Math.round(pl[7])}) без дверей/стіни під нею — глибина за її власною точкою`);
+}
+
+// Рамка дверей без власного нахилу (вузька смужка): вісь береться з найближчої балки чи дверей поруч.
+for (const pl of placements) {
+  if (tiles[pl[0]].kind !== "door_frame" || pl[10]) continue;
+  let best = null, bestD = 80;
+  for (const o of placements) {
+    if (!o[10] || !["beam", "door"].includes(tiles[o[0]].kind)) continue;
+    const d = Math.hypot(o[6] - pl[6], o[7] - pl[7]);
+    if (d < bestD) { bestD = d; best = o; }
+  }
+  if (best) pl[10] = best[10];
 }
 
 // --- 3. Межі світу: за розміщеними тайлами + відступ ------------------------
@@ -191,6 +217,7 @@ const floorOf = (c) => (Number.isFinite(c.onFloor) && c.onFloor >= 1 ? Math.floo
 const collisions = raw.collisions
   .filter((c) => c.shape === "poly" && c.type === "solid")
   .map((c) => ({ id: c.id, floor: floorOf(c), pts: c.pts.map((q) => [q.x, q.y]) }));
+collisions.push(...autoPolys);
 // Зони зміни поверху. Два способи позначити в редакторі, гра розуміє обидва:
 //   floorTransition: onFloor (де діє) + toFloor (куди переносить; fromFloor = onFloor);
 //   trigger з полем floor: onFloor (де діє) + floor (куди переносить).
@@ -238,17 +265,38 @@ const looseTransitions = transitions.filter((t) => !pairedIds.has(t.id));
 
 const spawns = (raw.spawns || []).map((s) => ({ x: s.x, y: s.y }));
 
+for (const n of warnedNoCollision) warnings.push(`тайл ${n}: не вдалося визначити форму низу — колізії не створено`);
+// --- 5. Перевірки карти ----------------------------------------------------------------------
+for (const t of transitions) if (!pairedIds.has(t.id)) warnings.push(`зона переходу ${t.id} (${t.onFloor}→${t.toFloor}) не має пари для сходів — працює як миттєвий перехід`);
+for (const st of stairs) {
+  if (st.top === st.b) warnings.push(`сходи ${st.id}: вгорі не знайдено плитки підлоги поверху ${st.high} — гравцю нікуди зійти`);
+}
+const kindOf = (pl) => tiles[pl[0]].kind;
+const doors = placements.filter((pl) => kindOf(pl) === "door");
+const frames = placements.filter((pl) => ["beam", "door_frame"].includes(kindOf(pl)));
+for (const d of doors) {
+  if (!frames.some((f) => Math.hypot(f[6] - d[6], f[7] - d[7]) < 80)) warnings.push(`двері в (${Math.round(d[6])}, ${Math.round(d[7])}) без рамки (Двері/Балки) поряд`);
+}
+const kindCounts = {};
+for (const pl of placements) kindCounts[kindOf(pl) || "—"] = (kindCounts[kindOf(pl) || "—"] || 0) + 1;
+
+console.log(`Автоколізій: ${autoPolys.length}`);
+console.log("Види розміщень:", JSON.stringify(kindCounts));
+if (warnings.length) console.log(`\nПОПЕРЕДЖЕННЯ (${warnings.length}):\n` + warnings.map((w) => "  - " + w).join("\n"));
+if (errors.length) {
+  console.error(`\nПОМИЛКИ (${errors.length}) — карту НЕ збудовано, старі файли гри не змінено:\n` + errors.map((e) => "  - " + e).join("\n"));
+  process.exit(1);
+}
+
+// --- 6. Запис файлів -------------------------------------------------------------------------
+fs.rmSync(OUT_TILES, { recursive: true, force: true });
+fs.mkdirSync(OUT_TILES, { recursive: true });
+for (const [id, buf] of pngOut) fs.writeFileSync(path.join(OUT_TILES, `${id}.png`), buf);
 fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, floorMask, spawns }));
-fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 4, name: raw.name, bounds, tiles, placements }));
+fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 5, name: raw.name, bounds, tiles, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));
 
-const ruleCounts = {};
-for (const t of Object.values(tiles)) if (t.rule) ruleCounts[t.rule] = (ruleCounts[t.rule] || 0) + 1;
-console.log("Правила малювання (тайлів на правило):", JSON.stringify(ruleCounts));
-const tagCounts = {};
-for (const p of placements) if (p[10]) tagCounts[p[10]] = (tagCounts[p[10]] || 0) + 1;
-console.log("Теги (тайлів на тег):", JSON.stringify(tagCounts));
 console.log(`Карта "${raw.name}": ${placements.length} тайлів, ${Object.keys(tiles).length} картинок, ${collisions.length} колізій (по поверхах: ${JSON.stringify(collisions.reduce((a, c) => ((a[c.floor] = (a[c.floor] || 0) + 1), a), {}))}), ${looseTransitions.length} переходів, ${stairs.length} сходів, ${floorMask.length} плиток підлоги поверхів 2+, ${spawns.length} спавнів`);
 console.log("Межі:", bounds);

@@ -126,29 +126,43 @@ function frame(): void {
 
   const view: View = { left: camX - 8, top: camY - 8, right: camX + viewW + 8, bottom: camY + viewH + 8 };
 
-  // Карта — у порядку редактора.
+  // Карта: усе, що на рівні глядача і нижче. На сходах глядач "стоїть" на верхньому поверсі сходів (me.st).
   const myFloor = me?.floor ?? 1;
-  // "Нагорі": на поверсі 2+ або на сходах — тоді верх малюється під гравцем, а не поверх нього.
-  const myElevated = myFloor >= 2 || !!me?.st;
-  map.drawLow(ctx, view, now, myFloor, myElevated);
+  const myLevel = me?.st || myFloor;
+  map.drawBase(ctx, view, now, myFloor, myLevel);
 
   // Гравці (від дальніх до ближніх). Стіни, що стоять перед гравцем, перемальовуються поверх нього.
   const sortedPlayers = [...players].sort((a, b) => a.y - b.y);
   for (const p of sortedPlayers) {
     chars.draw(ctx, p, now, p.id === myId);
     const rect: View = { left: p.x - 26, top: p.y - SPRITE_H - 2, right: p.x + 26, bottom: p.y + 8 };
-    map.drawOccludersOver(ctx, view, now, rect, p.x, p.y, p.floor ?? 1, (p.floor ?? 1) >= 2 || !!p.st, myElevated);
+    map.drawOver(ctx, view, now, rect, p.x, p.y, p.st || p.floor || 1, myLevel, myFloor);
   }
 
   // Дахи — поверх усього; над гравцем у будинку вони плавно зникають.
-  map.drawRoofs(ctx, view, now, me?.x ?? 0, me?.y ?? 0, myFloor, myElevated);
+  map.drawUpper(ctx, view, now, me?.x ?? 0, me?.y ?? 0, myFloor, myLevel);
 
-  if (debug) drawDebug(view);
+  if (debug) drawDebug(view, me ?? null);
+  map.debugMarks.length = 0;
   requestAnimationFrame(frame);
 }
 
 /** ?debug у адресі: червоні контури колізій поверх карти (перевірити, що все збігається). */
-function drawDebug(_v: View): void {
+function drawDebug(_v: View, me: { x: number; y: number; floor?: number; st?: number } | null): void {
+  // Тайли, що зараз перемальовані ПОВЕРХ гравця: помаранчева рамка (балка під якою він стоїть — блакитна) + підпис
+  // "axis: 1=L 2=R 0=кут/невідомо, f=поверх, @ — точка прив'язки".
+  ctx.font = "5px monospace";
+  for (const mk of map.debugMarks) {
+    ctx.strokeStyle = mk.beam ? "rgba(0,200,255,0.95)" : "rgba(255,140,0,0.95)";
+    ctx.strokeRect(mk.x + 0.5, mk.y + 0.5, mk.w - 1, mk.h - 1);
+    ctx.fillStyle = "#fff";
+    ctx.fillText(mk.label, mk.x + 2, mk.y + 8);
+  }
+  if (me) {
+    // Глибини гравця: t = y + x/2 (стіни осі L), s = y - x/2 (осі R).
+    ctx.fillStyle = "#0f0";
+    ctx.fillText(`me ${Math.round(me.x)},${Math.round(me.y)} f${me.floor ?? 1}${me.st ? " stairs→" + me.st : ""} t${Math.round(me.y + me.x / 2)} s${Math.round(me.y - me.x / 2)}`, me.x - 40, me.y + 14);
+  }
   ctx.strokeStyle = "rgba(255,0,0,0.9)";
   ctx.lineWidth = 1;
   for (const poly of debugCollisions) {

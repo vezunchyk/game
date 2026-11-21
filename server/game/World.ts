@@ -71,7 +71,7 @@ export class World {
         floor: p.floor,
         dir: p.dir,
         mv: p.moving,
-        st: p.stair >= 0,
+        st: p.stair >= 0 ? this.map.stairs[p.stair]!.high : 0,
       });
     }
     return { t: "snap", tick: this.tick, players };

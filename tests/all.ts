@@ -1,6 +1,10 @@
 import { run as movement } from "./movement.test.js";
+import { run as kinds } from "./kinds.test.js";
+import { run as render } from "./render.test.js";
 import { run as integration } from "./integration.test.js";
 movement();
+kinds();
+render();
 await integration();
 console.log("ВСІ ТЕСТИ ПРОЙДЕНО");
 process.exit(0);
