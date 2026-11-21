@@ -92,7 +92,14 @@ for (const id of usedIds) {
   // Вид, "внутрішня" позначка, світло/темно — з папки.
   const info = classifyTile(t, folderById, cfg);
   const label = `${id} «${t.name ?? ""}» (${[...info.chain].reverse().join("/") || "без папки"})`;
-  if (!info.kind) errors.push(`тайл ${label} використаний на карті, але його папки немає в map-src/folder-kinds.json`);
+  // Папки немає в таблиці: збірку НЕ зупиняємо — тайл отримує вид cfg.defaultKind (за замовчуванням prop) + попередження.
+  // Суворий режим (cfg.strictKinds = true у folder-kinds.json або STRICT_KINDS=1) повертає зупинку з помилкою.
+  let kind = info.kind;
+  if (!kind) {
+    const msg = `тайл ${label} використаний на карті, але його папки немає в map-src/folder-kinds.json`;
+    if (cfg.strictKinds || process.env.STRICT_KINDS === "1") errors.push(msg);
+    else { kind = cfg.defaultKind || "prop"; warnings.push(`${msg} — взято вид «${kind}»`); }
+  }
 
   // Напрям: ЗА КАРТИНКОЮ (основне) і за папкою Світлі/Темні (друге джерело).
   const png = decodePng(buf);
@@ -100,7 +107,7 @@ for (const id of usedIds) {
   const pic = axisFromPicture(png, w / frames);
   const byShade = info.shade ? cfg.axisByShade[info.shade] : 0;
   let axis = pic || byShade || 0;
-  if (cfg.axisKinds.includes(info.kind)) {
+  if (cfg.axisKinds.includes(kind)) {
     if (pic && byShade && pic !== byShade) {
       errors.push(`тайл ${label}: картинка має вісь ${AXIS_NAME[pic]}, а папка «${info.shade === "light" ? "Світлі" : "Темні"}» вимагає ${AXIS_NAME[byShade]} — тайл у не тій папці`);
     } else if (!axis && !info.axisless) {
@@ -116,7 +123,7 @@ for (const id of usedIds) {
     frames,
     frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
-    kind: info.kind,
+    kind,
     interior: info.interior ? 1 : 0,
     shade: info.shade,
     axis,

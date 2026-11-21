@@ -1,4 +1,4 @@
-// Тести "видів тайлів": розпізнавання напрямку за картинкою, вибір виду за папкою, зупинка збірки на помилці карти.
+// Тести "видів тайлів": розпізнавання напрямку за картинкою, вибір виду за папкою, збірка не зупиняється на невідомій папці (вид за замовчуванням + попередження), зупиняється на помилці напрямку.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
@@ -77,7 +77,7 @@ export function run(): void {
   assert.equal(wallTile.interior, false);
   assert.equal(classifyTile({ folderId: "f7" }, folders, cfg).kind, "", "невідома папка => вид порожній");
 
-  // 3. Збірка зупиняється на невідомій папці й НЕ чіпає файли гри
+  // 3. Невідома папка: у суворому режимі збірка зупиняється й НЕ чіпає файли гри; у звичайному — збирається з видом prop + попередження
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "buildmap-"));
   const png = makePng(40, 80, wall(0.5));
   const map = {
@@ -91,11 +91,16 @@ export function run(): void {
   fs.writeFileSync(mapFile, JSON.stringify(map));
   let failed = false, out = "";
   try {
-    execFileSync(process.execPath, [path.resolve("scripts/build-map.mjs"), mapFile], { cwd: tmp, stdio: "pipe" });
+    execFileSync(process.execPath, [path.resolve("scripts/build-map.mjs"), mapFile], { cwd: tmp, stdio: "pipe", env: { ...process.env, STRICT_KINDS: "1" } });
   } catch (e: any) { failed = true; out = String(e.stderr); }
-  assert.ok(failed, "збірка має впасти на невідомій папці");
+  assert.ok(failed, "у суворому режимі збірка має впасти на невідомій папці");
   assert.match(out, /folder-kinds\.json/, "помилка називає файл, де додати папку");
   assert.ok(!fs.existsSync(path.join(tmp, "public/assets/map.json")), "при помилці файли гри не пишуться");
+
+  const soft = execFileSync(process.execPath, [path.resolve("scripts/build-map.mjs"), mapFile], { cwd: tmp, stdio: "pipe", env: { ...process.env, STRICT_KINDS: "" } }).toString();
+  assert.match(soft, /ПОПЕРЕДЖЕННЯ/, "невідома папка — попередження, а не зупинка");
+  const softBuilt = JSON.parse(fs.readFileSync(path.join(tmp, "public/assets/map.json"), "utf8"));
+  assert.equal(softBuilt.tiles.t1.kind, "prop", "тайл без відомої папки отримує вид за замовчуванням");
 
   // ...а з відомою папкою збирається (+ дві плитки землі далеко одна від одної, щоб межі світу були просторі)
   map.tileFolders[0]!.name = "Стіни";
