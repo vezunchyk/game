@@ -73,6 +73,10 @@ const kindsFile = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..
 const cfg = JSON.parse(fs.readFileSync(kindsFile, "utf8"));
 const folderById = new Map((raw.tileFolders || []).map((f) => [f.id, f]));
 const errors = [], warnings = [];
+
+// --- Правила малювання (map-src/render-rules.json): які види тайлів плоскі і яка група малювання в кожного шару ---
+const rules = JSON.parse(fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../map-src/render-rules.json"), "utf8"));
+const flatKinds = new Set(rules.flatKinds || []);
 const AXIS_NAME = ["невідомо", "L", "R"];
 
 // --- 1. Тайли, які реально використані на карті -----------------------------
@@ -124,6 +128,7 @@ for (const id of usedIds) {
     frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
     kind,
+    flat: flatKinds.has(kind) ? 1 : 0,
     interior: info.interior ? 1 : 0,
     shade: info.shade,
     axis,
@@ -131,7 +136,8 @@ for (const id of usedIds) {
 }
 
 // --- 2. Розміщення: одразу рахуємо ТОЧНО ТАК, як редактор ---------------------
-// [tileId, x0, y0, z, sortKey, flags, ax, ay, pvx, pvy, axis]
+// [tileId, x0, y0, z, sortKey, flags, gx, gy, pvx, pvy, axis, ax, sy, group]
+//   ax, sy    — точка опори (ребро ромба з редактора) і ключ глибини; group — індекс у groups (поверх або дах)
 //   axis      — напрям стіни ПІСЛЯ віддзеркалення: 1 = L (знизу-ліворуч угору-праворуч), 2 = R, 0 = невідомо
 //   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
 //   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
@@ -142,6 +148,21 @@ for (const id of usedIds) {
 //   pvx,pvy   — точка, навколо якої віддзеркалюється
 const placements = [];
 const warnedNoCollision = new Set();
+// Групи малювання: шар редактора -> { floor: N } (поверх) або { roof: true } (дах). Порядок: поверхи за зростанням, дах останнім.
+const layerRules = rules.layers || {};
+const layerById = new Map((raw.layers || []).map((l) => [l.id, l]));
+for (const l of raw.layers || []) {
+  const r = layerRules[l.name];
+  if (!r || (!r.roof && !(r.floor >= 1))) errors.push(`шар «${l.name}» не описаний у map-src/render-rules.json (layers): вкажи {"floor": N} або {"roof": true}`);
+}
+const groupKey = (r) => (r.roof ? "roof" : "floor" + r.floor);
+const groupDefs = new Map(); // key -> { floor, roof }
+const ruleOfLayer = (l) => (l && layerRules[l.name]) || { floor: 1 };
+for (const l of raw.layers || []) { const r = ruleOfLayer(l); groupDefs.set(groupKey(r), r.roof ? { floor: 0, roof: 1 } : { floor: r.floor, roof: 0 }); }
+groupDefs.set("floor1", { floor: 1, roof: 0 });
+groupDefs.set("roof", groupDefs.get("roof") || { floor: 0, roof: 1 });
+const groups = [...groupDefs.entries()].sort((a, b) => a[1].roof - b[1].roof || a[1].floor - b[1].floor);
+const groupIndex = new Map(groups.map(([k], i) => [k, i]));
 // Підлога поверхів 2+ (плоскі тайли: плита, паркет): гравець на цьому поверсі може стояти лише на них (+ сходи).
 // Ромб верхньої грані тайла: центр (x0 + w/2, y0 + 16.5), півширини w/2, піввисота 16.5.
 const floorMask = [];
@@ -176,7 +197,13 @@ for (const p of raw.placements) {
   } else if (t.kind === "pillar") {
     autoPolys.push({ id: `auto:${p.id ?? p.tileId}`, floor: lvl, pts: pillarPoly(gx, gy, (cc.pillar || { radius: 5 }).radius) });
   }
-  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, gx, gy, pvx, pvy, (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis]);
+  // Група малювання з ШАРУ редактора; позначка «Дах» (isRoof) теж веде в групу даху.
+  const rule = p.isRoof ? { roof: true } : ruleOfLayer(layerById.get(p.layerId));
+  const grp = groupIndex.get(groupKey(rule));
+  // Точка опори для сортування — точка на ребрі ромба клітинки з редактора (ax, ay), а не «земля за пікселями».
+  // sy: за чим сортуємо за глибиною (тіні мають sortY — «трохи глибше за власника»).
+  const sy = p.sortY != null ? p.sortY + t.gy : ay;
+  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, gx, gy, pvx, pvy, (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis, ax, sy, grp]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
 }
@@ -300,7 +327,7 @@ fs.rmSync(OUT_TILES, { recursive: true, force: true });
 fs.mkdirSync(OUT_TILES, { recursive: true });
 for (const [id, buf] of pngOut) fs.writeFileSync(path.join(OUT_TILES, `${id}.png`), buf);
 fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, floorMask, spawns }));
-fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 5, name: raw.name, bounds, tiles, placements }));
+fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 6, name: raw.name, bounds, tiles, groups: groups.map(([, g]) => g), placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));

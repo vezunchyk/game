@@ -1,152 +1,96 @@
-// Тест порядку малювання: одне правило глибини для стін, балок, поверхів і даху (без браузера, на підставному canvas).
+// Тест порядку малювання: група (поверх) -> плоске -> тайли і персонажі за y -> дах. Без браузера, на підставному canvas.
 import assert from "node:assert/strict";
-import { MapRenderer, type Actor, type MapFile } from "../client/render/MapRenderer.js";
+import { MapRenderer, type Actor, type MapFile, type Placement, type Viewer } from "../client/render/MapRenderer.js";
 
 type Img = HTMLImageElement;
 const view = { left: -1000, top: -1000, right: 1000, bottom: 1000 };
 
-/** Підставний canvas: записує, які тайли й у якому порядку намальовано (id картинки). */
+/** Підставний canvas: записує, які тайли й у якому порядку намальовано (id картинки; "~" — напівпрозорий). */
 function fakeCtx(log: string[]) {
   const ctx: any = {
     globalAlpha: 1,
-    save() {}, restore() {}, beginPath() {}, rect() {}, clip() {}, translate() {}, scale() {},
+    save() {}, restore() {}, translate() {}, scale() {},
     drawImage(img: any) { log.push(img.id + (ctx.globalAlpha < 1 ? "~" : "")); },
   };
   return ctx as CanvasRenderingContext2D;
 }
 
-/** Плитка: [id, вид, ширина, висота] -> TileInfo. */
-const tile = (kind: string, w = 40, h = 84, interior = 0) => ({ kind, interior, w, h, px: 0.5, py: 1, frames: 1, frameMs: 150, loop: 0 });
-/** Розміщення: [id, x0, y0, z, key, flags, ax, ay, pvx, pvy, axis]; якір = (ax, ay). */
-const place = (id: string, ax: number, ay: number, o: { z?: number; floor?: number; roof?: boolean; axis?: number } = {}) =>
-  [id, ax - 20, ay - 84, o.z ?? 10, ay, ((o.floor ?? 0) << 3) | (o.roof ? 4 : 0), ax, ay, ax, ay, o.axis ?? 0] as MapFile["placements"][number];
+const tile = (kind: string, o: { w?: number; h?: number; flat?: boolean; interior?: number } = {}) =>
+  ({ kind, flat: o.flat ? 1 : 0, interior: o.interior ?? 0, w: o.w ?? 40, h: o.h ?? 84, frames: 1, frameMs: 150, loop: 0 });
+/** Групи: 0 = поверх 1, 1 = поверх 2, 2 = дах. */
+const groups = [{ floor: 1, roof: 0 }, { floor: 2, roof: 0 }, { floor: 0, roof: 1 }];
+/** Розміщення з точкою опори (ax, sy) у групі grp. */
+const place = (id: string, ax: number, sy: number, o: { z?: number; grp?: number } = {}): Placement =>
+  [id, ax - 20, sy - 84, o.z ?? 10, sy, 0, ax, sy, ax, sy, 0, ax, sy, o.grp ?? 0];
 
-function make(tiles: MapFile["tiles"], placements: MapFile["placements"]): MapRenderer {
+function make(tiles: MapFile["tiles"], placements: Placement[]): MapRenderer {
   const r = new MapRenderer();
   const imgs = new Map<string, Img>(Object.keys(tiles).map((id) => [id, { id } as unknown as Img]));
-  r.build({ format: 5, bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 }, tiles, placements }, imgs);
+  r.build({ format: 6, bounds: { minX: 0, minY: 0, maxX: 0, maxY: 0 }, tiles, groups, placements }, imgs);
   return r;
 }
 
-/** Годинник тесту (мс): час тече лише вперед, як у грі. */
-let clock = 1000;
-
-/** Кадр: база -> персонаж ("P") -> перемальовка поверх нього -> верх. */
-function frame(r: MapRenderer, px: number, py: number, o: { floor?: number; level?: number; viewerLevel?: number } = {}): string[] {
-  const log: string[] = [];
-  const ctx = fakeCtx(log);
-  const floor = o.floor ?? 1, level = o.level ?? floor, viewerLevel = o.viewerLevel ?? level;
-  r.drawBase(ctx, view, 0, floor, viewerLevel);
-  log.push("P");
-  r.drawOver(ctx, view, 0, { left: px - 26, top: py - 66, right: px + 26, bottom: py + 8 }, px, py, level, viewerLevel, floor);
-  const warm = fakeCtx([]); // дати альфі даху вирости/зникнути (плавний перехід), у журнал це не йде
-  for (let i = 0; i < 20; i++) r.drawUpper(warm, view, (clock += 200), px, py, floor, viewerLevel);
-  r.drawUpper(ctx, view, (clock += 200), px, py, floor, viewerLevel);
-  return log;
-}
-const after = (log: string[]) => log.slice(log.indexOf("P") + 1);
-
-/** Кадр «як у Unity»: тайли й персонажі ("P", "Q") одним списком за глибиною опорної точки -> верх. */
-function sceneFrame(r: MapRenderer, actors: { name: string; x: number; y: number; level?: number }[], o: { floor?: number; viewerLevel?: number } = {}): string[] {
-  const log: string[] = [];
-  const ctx = fakeCtx(log);
-  const floor = o.floor ?? 1, viewerLevel = o.viewerLevel ?? floor;
-  const list: Actor[] = actors.map((a) => ({
-    x: a.x, y: a.y, level: a.level ?? floor,
-    rect: { left: a.x - 26, top: a.y - 66, right: a.x + 26, bottom: a.y + 8 },
-    draw: () => { log.push(a.name); },
-  }));
-  r.drawScene(ctx, view, 0, floor, viewerLevel, list);
+let clock = 1000; // годинник тесту (мс): час тече лише вперед, як у грі
+/** Кадр: персонажі ("P", "Q") разом з картою. Перед кадром даємо прозорості дійти до цілі. */
+function frame(r: MapRenderer, actors: { name: string; x: number; y: number; level?: number }[], v: Partial<Viewer> = {}): string[] {
+  const me = actors[0]!;
+  const viewer: Viewer = { x: me.x, y: me.y, floor: v.floor ?? 1, level: v.level ?? v.floor ?? 1 };
   const warm = fakeCtx([]);
-  for (let i = 0; i < 20; i++) r.drawUpper(warm, view, (clock += 200), actors[0]!.x, actors[0]!.y, floor, viewerLevel);
-  r.drawUpper(ctx, view, (clock += 200), actors[0]!.x, actors[0]!.y, floor, viewerLevel);
+  for (let i = 0; i < 20; i++) r.draw(warm, view, (clock += 200), viewer, []);
+  const log: string[] = [];
+  const list: Actor[] = actors.map((a) => ({ x: a.x, y: a.y, level: a.level ?? viewer.level, draw: () => { log.push(a.name); } }));
+  r.draw(fakeCtx(log), view, (clock += 200), viewer, list);
   return log;
 }
+const P = (x: number, y: number, level?: number) => [{ name: "P", x, y, level }];
 
 export function run(): void {
   const tiles = {
-    gr: tile("floor", 64, 33), wallR: tile("wall"), wallL: tile("wall"), beam: tile("beam", 40, 60),
-    roof: tile("roof", 64, 40), slab: tile("floor", 64, 37), pillar: tile("pillar", 16, 60), stairs: tile("stairs", 66, 97),
+    gr: tile("floor", { w: 64, h: 33, flat: true }), wall: tile("wall"), beam: tile("beam", { h: 60 }), trim: tile("trim"),
+    stairs: tile("stairs", { w: 66, h: 97, flat: true }), roof: tile("roof", { w: 64, h: 40 }), outer: tile("wall"),
   };
 
-  // 1. Стіна осі R (s = y - x/2): гравець ПЕРЕД нею — не перекриває; ЗА нею — стіна перемальовується поверх нього
-  const r1 = make(tiles, [place("gr", 0, 0, { z: 1 }), place("wallR", 0, 0, { axis: 2 })]);
-  assert.deepEqual(frame(r1, 0, 20), ["gr", "wallR", "P"], "перед стіною: нічого поверх");
-  assert.deepEqual(frame(r1, 0, -30), ["gr", "wallR", "P", "wallR"], "за стіною: стіна над гравцем");
-  // допуск: на 3 px «за лінією» — ще не перекриває (колізії пускають впритул)
-  assert.deepEqual(after(frame(r1, 0, -3)), [], "допуск глибини біля лінії стіни");
+  // 1. Правило y: персонаж ПЕРЕД стіною (y більший) — після неї; ЗА стіною — до неї; рівні y — тайл над персонажем.
+  const r1 = make(tiles, [place("wall", 0, 0)]);
+  assert.deepEqual(frame(r1, P(0, 20)), ["wall", "P"], "перед стіною — персонаж над нею");
+  assert.deepEqual(frame(r1, P(0, -20)), ["P", "wall"], "за стіною — стіна над персонажем");
+  assert.deepEqual(frame(r1, P(0, 0)), ["P", "wall"], "рівні y — тайл над персонажем");
 
-  // 2. Сусідні сегменти ОДНІЄЇ стіни ведуть себе однаково (раніше ріжуло гравця збоку)
-  const r2 = make(tiles, [place("wallR", -32, -16, { axis: 2 }), place("wallR", 0, 0, { axis: 2 }), place("wallR", 32, 16, { axis: 2 })]);
-  const near = after(frame(r2, 0, 20)); // s_p = 20 > s_w(0) -> перед усіма трьома
-  assert.deepEqual(near, [], "поруч із стіною, ПЕРЕД нею — жоден сегмент не накриває");
-  assert.equal(after(frame(r2, 0, -30)).length, 3, "ЗА стіною — накривають усі три");
+  // 2. Плоске (підлога, сходи) — завжди під персонажем, хоч би яка в нього була y опори.
+  const r2 = make(tiles, [place("gr", 0, 50, { z: 1 }), place("stairs", 0, 40, { z: 16 }), place("wall", 0, 0)]);
+  assert.deepEqual(frame(r2, P(0, -10)), ["gr", "stairs", "P", "wall"], "підлога і сходи під персонажем, стіна за y");
+  assert.deepEqual(frame(r2, P(0, 60)), ["gr", "stairs", "wall", "P"]);
 
-  // 3. Вісь L: глибина t = y + x/2
-  const r3 = make(tiles, [place("wallL", 0, 0, { axis: 1 })]);
-  assert.deepEqual(after(frame(r3, 0, 20)), []);
-  assert.deepEqual(after(frame(r3, 0, -30)), ["wallL"]);
+  // 3. z — лише між тайлами: однакова y -> менший z раніше; z НЕ рухає персонажа.
+  const r3 = make(tiles, [place("trim", 0, 0, { z: 15 }), place("wall", 0, 0, { z: 13 })]);
+  assert.deepEqual(frame(r3, P(0, 30)), ["wall", "trim", "P"], "z розв'язує порядок тайлів з однаковою y");
+  const r3b = make(tiles, [place("wall", 0, 0, { z: 99 }), place("trim", 0, 50, { z: 1 })]);
+  assert.deepEqual(frame(r3b, P(0, 10)), ["wall", "P", "trim"], "великий z не піднімає тайл над персонажем, якщо той ближче до камери");
 
-  // 4. Балка: гравець у прорізі під нею, навіть трохи ПЕРЕД лінією, — під балкою; далі від прорізу — звичайне правило
-  const r4 = make(tiles, [place("beam", 0, 0, { axis: 2 })]);
-  assert.deepEqual(after(frame(r4, 0, 10)), ["beam"], "у прорізі (10 px перед лінією) — під балкою");
-  assert.deepEqual(after(frame(r4, 0, 40)), [], "далеко перед стіною — балка не чіпає");
-  assert.deepEqual(after(frame(r4, 200, 0)), [], "поза довжиною балки — не чіпає");
+  // 4. Вершок (балка) з тією ж точкою опори, що й стіна: у прорізі (y за лінією) — персонаж під ним; перед лінією — над.
+  const r4 = make(tiles, [place("wall", -32, 0), place("beam", 0, 0, { z: 14 }), place("wall", 32, 0)]);
+  assert.deepEqual(frame(r4, P(0, -4)), ["P", "wall", "wall", "beam"], "у прорізі за лінією — під балкою");
+  assert.deepEqual(frame(r4, P(0, 6)), ["wall", "wall", "beam", "P"], "перед лінією — над балкою");
 
-  // 5. Кут/стовп без осі: перед гравцем лише коли ближчий за обома осями
-  const r5 = make(tiles, [place("pillar", 0, 0)]);
-  assert.deepEqual(after(frame(r5, 0, -30)), ["pillar"], "стовп прямо перед гравцем (ближче за обома осями)");
-  assert.deepEqual(after(frame(r5, 0, 30)), []);
-  assert.deepEqual(after(frame(r5, 60, -6)), [], "збоку (ближчий лише за однією віссю) — не накриває");
+  // 5. Поверхи: усе поверху 2 малюється після поверху 1, незалежно від y; персонаж іде у свій поверх.
+  const r5 = make(tiles, [place("wall", 0, 100, { grp: 0 }), place("gr", 0, -500, { grp: 1, z: 20 }), place("trim", 0, -500, { grp: 1, z: 21 })]);
+  assert.deepEqual(frame(r5, P(0, 0, 1), { floor: 1 }), ["P", "wall", "gr", "trim"], "поверх 2 малюється після поверху 1, хоч його y менша");
+  const up = frame(r5, [{ name: "P", x: 0, y: 0, level: 2 }], { floor: 2 });
+  assert.deepEqual(up, ["wall~", "gr", "trim", "P"], "поверх 1 тьмяний і першим; на 2-му: підлога, далі тайл за персонажем (менший y), потім персонаж");
 
-  // 6. Поверхи: плита 2-го поверху — НАД глядачем на 1-му (малюється після), а для глядача на 2-му — ПІД ним
-  const r6 = make(tiles, [place("gr", 0, 0, { z: 1 }), place("slab", 0, -80, { floor: 2, z: 20 }), place("wallR", 0, 0, { floor: 1, axis: 2, z: 13 })]);
-  assert.deepEqual(frame(r6, 0, 20, { floor: 1 }), ["gr", "wallR", "P", "slab"], "глядач на 1-му: плита поверху — ПІСЛЯ гравця (над ним)");
-  const up = frame(r6, 0, -90, { floor: 2 });
-  assert.deepEqual(up.slice(0, up.indexOf("P") + 1), ["gr", "wallR~", "slab", "P"], "глядач на 2-му: нижній поверх тьмяний, плита ПІД ним");
-  // стіна 1-го поверху НЕ перекриває гравця на 2-му поверсі (нижчі об'єкти ніколи не перекривають вищих)
-  assert.ok(!after(up).includes("wallR"), "нижчий поверх не перекриває вищий");
+  // 6. Дах: останній; ховається, коли глядач на поверсі 2+ або всередині сліду будинку.
+  const house = [
+    place("outer", -100, -50, { grp: 0 }), place("outer", 100, -50, { grp: 0 }), place("outer", -100, 50, { grp: 0 }), place("outer", 100, 50, { grp: 0 }),
+    place("roof", 0, 0, { grp: 2, z: 35 }),
+  ];
+  const r6 = make(tiles, house);
+  assert.deepEqual(frame(r6, P(400, 0)).slice(-1), ["roof"], "дах малюється останнім");
+  assert.ok(!frame(r6, P(0, 0)).includes("roof"), "всередині сліду будинку дах зникає");
+  assert.ok(!frame(r6, P(400, 0), { floor: 2 }).includes("roof"), "на поверсі 2 дах зникає");
 
-  // 7. Дах: над глядачем на 1-му — є; на поверсі 2+ — зникає
-  const r7 = make(tiles, [place("roof", 0, -100, { roof: true, z: 40 }), place("wallR", 0, 0, { axis: 2 })]);
-  assert.ok(frame(r7, 50, 200, { floor: 1 }).includes("roof"), "дах видно, коли глядач далеко");
-  assert.ok(!frame(r7, 50, 200, { floor: 2 }).includes("roof"), "дах ховається на поверсі 2");
-
-  // 8. Сходи — плоске (під гравцем) і не тьмяніють
-  const r8 = make(tiles, [place("stairs", 0, 0, { floor: 1, z: 16 })]);
-  const st = frame(r8, 0, -20, { floor: 2, level: 2, viewerLevel: 2 });
-  assert.deepEqual(st, ["stairs", "P"], "сходи під гравцем, без затемнення");
-
-  // ---- Режим «як у Unity» (drawScene): порядок = глибина опорної точки (y), персонаж сортується разом з тайлами ----
-  // 9. Один тайл: гравець далі від камери (y менший) — малюється ДО нього, ближче — ПІСЛЯ
-  const u1 = make(tiles, [place("gr", 0, 0, { z: 1 }), place("pillar", 0, 0)]);
-  assert.deepEqual(sceneFrame(u1, [{ name: "P", x: 0, y: -30 }]), ["gr", "P", "pillar"], "за стовпом: гравець під ним");
-  assert.deepEqual(sceneFrame(u1, [{ name: "P", x: 0, y: 30 }]), ["gr", "pillar", "P"], "перед стовпом: гравець над ним");
-  // допуск: на 3 px «за лінією» — ще перед стіною
-  assert.deepEqual(sceneFrame(u1, [{ name: "P", x: 0, y: -3 }]), ["gr", "pillar", "P"], "допуск глибини біля лінії");
-
-  // 10. Порядок тайлів не залежить від порядку в редакторі: за y опорної точки (ближче до камери — пізніше)
-  const u2 = make(tiles, [place("wallR", 0, 40, { axis: 2, z: 5 }), place("wallL", 0, 0, { axis: 1, z: 50 }), place("pillar", 0, 20, { z: 1 })]);
-  assert.deepEqual(sceneFrame(u2, [{ name: "P", x: 500, y: 500 }]), ["wallL", "pillar", "wallR", "P"], "тайли за глибиною, не за z з редактора");
-
-  // 11. Двоє гравців між тайлами: кожен на своєму місці в одному списку
-  const u3 = make(tiles, [place("wallR", 0, 0, { axis: 2 }), place("pillar", 0, 100)]);
-  assert.deepEqual(sceneFrame(u3, [{ name: "P", x: 0, y: 50 }, { name: "Q", x: 0, y: -50 }]), ["Q", "wallR", "P", "pillar"], "Q за стіною, P між стіною і стовпом");
-
-  // 12. Балка: гравець у прорізі під нею — балка ПІСЛЯ нього, навіть якщо за глибиною вона позаду
-  const u4 = make(tiles, [place("beam", 0, 0, { axis: 2 })]);
-  assert.deepEqual(sceneFrame(u4, [{ name: "P", x: 0, y: 10 }]), ["P", "beam"], "у прорізі — під балкою");
-  assert.deepEqual(sceneFrame(u4, [{ name: "P", x: 0, y: 40 }]), ["beam", "P"], "далеко перед балкою — за глибиною");
-
-  // 13. Поверхи: підлога першою, нижчий поверх тьмяний, плита 2-го поверху над глядачем 1-го — після гравця
-  const u5 = make(tiles, [place("gr", 0, 0, { z: 1 }), place("slab", 0, -80, { floor: 2, z: 20 }), place("wallR", 0, 0, { floor: 1, axis: 2, z: 13 })]);
-  assert.deepEqual(sceneFrame(u5, [{ name: "P", x: 0, y: 20 }], { floor: 1 }), ["gr", "wallR", "P", "slab"], "глядач на 1-му: плита після гравця");
-  const u6 = sceneFrame(u5, [{ name: "P", x: 0, y: -90, level: 2 }], { floor: 2 });
-  assert.deepEqual(u6.slice(0, u6.indexOf("P") + 1), ["gr", "wallR~", "slab", "P"], "глядач на 2-му: нижній поверх тьмяний, плита під гравцем");
-
-  // 14. Сходи — плоске, гравець завжди над ними
-  const u7 = make(tiles, [place("stairs", 0, 0, { floor: 1, z: 16 })]);
-  assert.deepEqual(sceneFrame(u7, [{ name: "P", x: 0, y: -20, level: 2 }], { floor: 2, viewerLevel: 2 }), ["stairs", "P"], "сходи під гравцем, без затемнення");
+  // 7. Нижчий поверх тьмяніє, коли глядач вище; персонаж сходів (level=2) стоїть у поверсі 2.
+  const r7 = make(tiles, [place("wall", 0, 0, { grp: 0 })]);
+  assert.deepEqual(frame(r7, P(0, 20, 2), { floor: 2 }), ["wall~", "P"]);
 
   console.log("render: OK");
 }

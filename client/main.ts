@@ -11,7 +11,6 @@ import { Connection } from "./net/Connection.js";
 import { CharacterRenderer } from "./render/CharacterRenderer.js";
 import { Interpolation } from "./render/Interpolation.js";
 import { MapRenderer, type View } from "./render/MapRenderer.js";
-import { SPRITE_H } from "../shared/constants.js";
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 
@@ -28,14 +27,12 @@ const ERROR_TEXT: Record<ErrorCode, string> = {
 const canvas = $<HTMLCanvasElement>("game");
 const ctx = canvas.getContext("2d")!;
 const debug = new URLSearchParams(location.search).has("debug");
-// ?old в адресі — старий порядок малювання (drawBase/drawOver); за замовчуванням — «як у Unity» (drawScene).
-const oldRender = new URLSearchParams(location.search).has("old");
 
 declare const __BUILD_ID__: string;
 // Мала мітка збірки в куті екрана (видно і в грі, і на скріншоті) — щоб одразу бачити, яка версія клієнта працює.
 {
   const tag = document.createElement("div");
-  tag.textContent = __BUILD_ID__ + " · map v3 · " + (oldRender ? "sort old" : "sort unity");
+  tag.textContent = __BUILD_ID__ + " · map v6 · group/y";
   tag.style.cssText = "position:fixed;left:6px;bottom:4px;z-index:50;font:10px monospace;color:#fff;opacity:.55;pointer-events:none";
   document.body.appendChild(tag);
   $("login-status").textContent = "збірка: " + __BUILD_ID__;
@@ -129,49 +126,26 @@ function frame(): void {
 
   const view: View = { left: camX - 8, top: camY - 8, right: camX + viewW + 8, bottom: camY + viewH + 8 };
 
-  // Карта: усе, що на рівні глядача і нижче. На сходах глядач "стоїть" на верхньому поверсі сходів (me.st).
+  // Карта і персонажі: групи (поверхи) по черзі; всередині поверху тайли й персонажі за y точки опори.
+  // На сходах глядач "стоїть" на верхньому поверсі сходів (me.st).
   const myFloor = me?.floor ?? 1;
   const myLevel = me?.st || myFloor;
-  const rectOf = (p: { x: number; y: number }): View => ({ left: p.x - 26, top: p.y - SPRITE_H - 2, right: p.x + 26, bottom: p.y + 8 });
-  if (oldRender) {
-    // Старий порядок: карта в порядку редактора, гравці від дальніх до ближніх, стіни перед гравцем — перемальовка поверх нього.
-    map.drawBase(ctx, view, now, myFloor, myLevel);
-    const sortedPlayers = [...players].sort((a, b) => a.y - b.y);
-    for (const p of sortedPlayers) {
-      chars.draw(ctx, p, now, p.id === myId);
-      map.drawOver(ctx, view, now, rectOf(p), p.x, p.y, p.st || p.floor || 1, myLevel, myFloor);
-    }
-  } else {
-    // Як у Unity: тайли і гравці — один список, за глибиною опорної точки.
-    map.drawScene(ctx, view, now, myFloor, myLevel, players.map((p) => ({
-      x: p.x, y: p.y, level: p.st || p.floor || 1, rect: rectOf(p),
-      draw: () => chars.draw(ctx, p, now, p.id === myId),
-    })));
-  }
+  map.draw(ctx, view, now, { x: me?.x ?? 0, y: me?.y ?? 0, floor: myFloor, level: myLevel }, players.map((p) => ({
+    x: p.x, y: p.y, level: p.st || p.floor || 1,
+    draw: () => chars.draw(ctx, p, now, p.id === myId),
+  })));
 
-  // Дахи — поверх усього; над гравцем у будинку вони плавно зникають.
-  map.drawUpper(ctx, view, now, me?.x ?? 0, me?.y ?? 0, myFloor, myLevel);
-
-  if (debug) drawDebug(view, me ?? null);
-  map.debugMarks.length = 0;
+  if (debug) { map.drawDebug(ctx, view); drawDebug(view, me ?? null); }
   requestAnimationFrame(frame);
 }
 
 /** ?debug у адресі: червоні контури колізій поверх карти (перевірити, що все збігається). */
 function drawDebug(_v: View, me: { x: number; y: number; floor?: number; st?: number } | null): void {
-  // Тайли, що зараз перемальовані ПОВЕРХ гравця: помаранчева рамка (балка під якою він стоїть — блакитна) + підпис
-  // "axis: 1=L 2=R 0=кут/невідомо, f=поверх, @ — точка прив'язки".
   ctx.font = "5px monospace";
-  for (const mk of map.debugMarks) {
-    ctx.strokeStyle = mk.beam ? "rgba(0,200,255,0.95)" : "rgba(255,140,0,0.95)";
-    ctx.strokeRect(mk.x + 0.5, mk.y + 0.5, mk.w - 1, mk.h - 1);
-    ctx.fillStyle = "#fff";
-    ctx.fillText(mk.label, mk.x + 2, mk.y + 8);
-  }
   if (me) {
-    // Глибини гравця: t = y + x/2 (стіни осі L), s = y - x/2 (осі R).
+    // Позиція ніг і поверх. Жовті крапки на карті — точки опори тайлів (за ними сортується).
     ctx.fillStyle = "#0f0";
-    ctx.fillText(`me ${Math.round(me.x)},${Math.round(me.y)} f${me.floor ?? 1}${me.st ? " stairs→" + me.st : ""} t${Math.round(me.y + me.x / 2)} s${Math.round(me.y - me.x / 2)}`, me.x - 40, me.y + 14);
+    ctx.fillText(`me ${Math.round(me.x)},${Math.round(me.y)} f${me.floor ?? 1}${me.st ? " stairs→" + me.st : ""}`, me.x - 40, me.y + 14);
   }
   ctx.strokeStyle = "rgba(255,0,0,0.9)";
   ctx.lineWidth = 1;

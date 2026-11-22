@@ -19,6 +19,6 @@ await build({
 await build({
   entryPoints: ["client/main.ts"], outfile: "public/game.js",
   bundle: true, platform: "browser", format: "iife", target: "es2020", minify: false,
-  define: { __BUILD_ID__: JSON.stringify("render-v7 " + new Date().toISOString().slice(0, 16).replace("T", " ")) },
+  define: { __BUILD_ID__: JSON.stringify("render-v8 " + new Date().toISOString().slice(0, 16).replace("T", " ")) },
 });
 console.log("Збірка готова.");
