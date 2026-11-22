@@ -5,6 +5,7 @@
 //   public/assets/map.json      — для КЛІЄНТА: що і де малювати
 //   public/assets/tiles/*.png   — картинки тайлів (замість base64 у json)
 // Запуск:  npm run build-map -- шлях/до/tileweaver_Map.json
+// Порядок малювання задає ТІЛЬКИ шар редактора (map-src/render-rules.json); будинок = група з редактора (поле group у розміщення).
 // ============================================================================
 import fs from "node:fs";
 import path from "node:path";
@@ -74,13 +75,26 @@ const cfg = JSON.parse(fs.readFileSync(kindsFile, "utf8"));
 const folderById = new Map((raw.tileFolders || []).map((f) => [f.id, f]));
 const errors = [], warnings = [];
 
-// --- Правила малювання (map-src/render-rules.json): які види тайлів плоскі і яка група малювання в кожного шару ---
+// --- Правила малювання (map-src/render-rules.json): яка група малювання в кожного шару (види тайлів порядок не міняють) ---
 const rules = JSON.parse(fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../map-src/render-rules.json"), "utf8"));
-const flatKinds = new Set(rules.flatKinds || []);
 const AXIS_NAME = ["невідомо", "L", "R"];
 
 // --- 1. Тайли, які реально використані на карті -----------------------------
-const usedIds = new Set(raw.placements.map((p) => p.tileId));
+// Розміщення без картинки (тайл видалено з палітри) і дублі (той самий тайл у тій самій клітинці того самого шару) — у звіт, не мовчки.
+const noPicture = []; // { id, tileId, group, layer }
+const dupPlacements = []; // { id, tileId, x, y }
+const layerNameById = new Map((raw.layers || []).map((l) => [l.id, l.name]));
+const seenPlacement = new Set();
+const placementsIn = [];
+for (const p of raw.placements) {
+  const rt = raw.tiles[p.tileId];
+  if (!rt || !rt.dataURL) { noPicture.push({ id: p.id, tileId: p.tileId, group: p.group || "", layer: layerNameById.get(p.layerId) || p.layerId || "" }); continue; }
+  const key = [p.tileId, p.x, p.y, p.z, p.layerId, p.flipX ? 1 : 0, p.flipY ? 1 : 0, p.sortY ?? ""].join("|");
+  if (seenPlacement.has(key)) { dupPlacements.push({ id: p.id, tileId: p.tileId, x: p.x, y: p.y }); continue; }
+  seenPlacement.add(key);
+  placementsIn.push(p);
+}
+const usedIds = new Set(placementsIn.map((p) => p.tileId));
 const tiles = {};
 for (const id of usedIds) {
   const t = raw.tiles[id];
@@ -128,7 +142,6 @@ for (const id of usedIds) {
     frameMs: t.animFrameMs ? Number(t.animFrameMs) : 150,
     loop: t.animLoop ? 1 : 0,
     kind,
-    flat: flatKinds.has(kind) ? 1 : 0,
     interior: info.interior ? 1 : 0,
     shade: info.shade,
     axis,
@@ -136,8 +149,8 @@ for (const id of usedIds) {
 }
 
 // --- 2. Розміщення: одразу рахуємо ТОЧНО ТАК, як редактор ---------------------
-// [tileId, x0, y0, z, sortKey, flags, gx, gy, pvx, pvy, axis, ax, sy, group]
-//   ax, sy    — точка опори (ребро ромба з редактора) і ключ глибини; group — індекс у groups (поверх або дах)
+// [tileId, x0, y0, z, sortKey, flags, gx, gy, pvx, pvy, axis, ax, sy, group, house]
+//   ax, sy    — точка опори (ребро ромба з редактора) і ключ глибини; group — індекс у groups (земля, поверх або дах); house — індекс у houses або -1
 //   axis      — напрям стіни ПІСЛЯ віддзеркалення: 1 = L (знизу-ліворуч угору-праворуч), 2 = R, 0 = невідомо
 //   x0,y0     — лівий верхній кут (цілі, як Math.round у редакторі)
 //   sortKey   — p.sortY ?? p.y (редактор сортує за (z, sortKey))
@@ -147,18 +160,20 @@ for (const id of usedIds) {
 //               точку від найближчих дверей/рамки/стіни під нею.
 //   pvx,pvy   — точка, навколо якої віддзеркалюється
 const placements = [];
+const beamDepth = [];
 const warnedNoCollision = new Set();
 // Групи малювання: шар редактора -> { floor: N } (поверх) або { roof: true } (дах). Порядок: поверхи за зростанням, дах останнім.
 const layerRules = rules.layers || {};
 const layerById = new Map((raw.layers || []).map((l) => [l.id, l]));
 for (const l of raw.layers || []) {
   const r = layerRules[l.name];
-  if (!r || (!r.roof && !(r.floor >= 1))) errors.push(`шар «${l.name}» не описаний у map-src/render-rules.json (layers): вкажи {"floor": N} або {"roof": true}`);
+  if (!r || (!r.roof && !r.ground && !(r.floor >= 1))) errors.push(`шар «${l.name}» не описаний у map-src/render-rules.json (layers): вкажи {"floor": N}, {"ground": true} або {"roof": true}`);
 }
-const groupKey = (r) => (r.roof ? "roof" : "floor" + r.floor);
+const groupKey = (r) => (r.roof ? "roof" : r.ground ? "floor0" : "floor" + r.floor);
+const groupDef = (r) => (r.roof ? { floor: 0, roof: 1 } : r.ground ? { floor: 0, roof: 0 } : { floor: r.floor, roof: 0 });
 const groupDefs = new Map(); // key -> { floor, roof }
 const ruleOfLayer = (l) => (l && layerRules[l.name]) || { floor: 1 };
-for (const l of raw.layers || []) { const r = ruleOfLayer(l); groupDefs.set(groupKey(r), r.roof ? { floor: 0, roof: 1 } : { floor: r.floor, roof: 0 }); }
+for (const l of raw.layers || []) { const r = ruleOfLayer(l); groupDefs.set(groupKey(r), groupDef(r)); }
 groupDefs.set("floor1", { floor: 1, roof: 0 });
 groupDefs.set("roof", groupDefs.get("roof") || { floor: 0, roof: 1 });
 const groups = [...groupDefs.entries()].sort((a, b) => a[1].roof - b[1].roof || a[1].floor - b[1].floor);
@@ -168,7 +183,10 @@ const groupIndex = new Map(groups.map(([k], i) => [k, i]));
 const floorMask = [];
 const autoPolys = []; // автоколізія: { id, floor, pts }
 let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-for (const p of raw.placements) {
+// Будинки: група з редактора (p.group) -> будинок; ромби підлоги його поверхів задають «я в будинку».
+const houseIndex = new Map();
+const houses = []; // { name, diamonds: [[floor, cx, cy, hw, hh], ...] }
+for (const p of placementsIn) {
   const t = tiles[p.tileId];
   if (!t) continue;
   if ((p.scaleX ?? 1) !== 1 || (p.scaleY ?? 1) !== 1 || p.rotation || p.skewX) {
@@ -197,13 +215,20 @@ for (const p of raw.placements) {
   } else if (t.kind === "pillar") {
     autoPolys.push({ id: `auto:${p.id ?? p.tileId}`, floor: lvl, pts: pillarPoly(gx, gy, (cc.pillar || { radius: 5 }).radius) });
   }
-  // Група малювання з ШАРУ редактора; позначка «Дах» (isRoof) теж веде в групу даху.
-  const rule = p.isRoof ? { roof: true } : ruleOfLayer(layerById.get(p.layerId));
+  // Група малювання — ЛИШЕ з шару редактора (render-rules.json).
+  const rule = ruleOfLayer(layerById.get(p.layerId));
   const grp = groupIndex.get(groupKey(rule));
+  // Будинок: група з редактора. Ромби підлоги (не дах, не земля) — це те, на чому треба стояти, щоб бути «в будинку».
+  let house = -1;
+  if (p.group) {
+    if (!houseIndex.has(p.group)) { houseIndex.set(p.group, houses.length); houses.push({ name: String(p.group), diamonds: [] }); }
+    house = houseIndex.get(p.group);
+    if (t.kind === "floor" && !rule.roof && !rule.ground) houses[house].diamonds.push([rule.floor, x0 + fw / 2, y0 + 16.5, fw / 2, 16.5]);
+  }
   // Точка опори для сортування — точка на ребрі ромба клітинки з редактора (ax, ay), а не «земля за пікселями».
   // sy: за чим сортуємо за глибиною (тіні мають sortY — «трохи глибше за власника»).
   const sy = p.sortY != null ? p.sortY + t.gy : ay;
-  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, gx, gy, pvx, pvy, (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis, ax, sy, grp]);
+  placements.push([p.tileId, x0, y0, p.z, p.sortY != null ? p.sortY : p.y, flags, gx, gy, pvx, pvy, (p.flipX ? 1 : 0) !== (p.flipY ? 1 : 0) ? [0, 2, 1][t.axis] : t.axis, ax, sy, grp, house]);
   minX = Math.min(minX, x0); minY = Math.min(minY, y0);
   maxX = Math.max(maxX, x0 + fw); maxY = Math.max(maxY, y0 + t.h);
 }
@@ -217,6 +242,7 @@ for (const pl of placements) {
     const k = tiles[o[0]].kind;
     const prio = k === "door" ? 0 : k === "door_frame" ? 1 : k === "wall" ? 2 : -1;
     if (prio < 0 || o[10] !== pl[10] || o[7] <= pl[7]) continue; // під балкою, тієї ж осі
+    if (o[13] !== pl[13] || o[7] - pl[7] > 120) continue; // носій — з того ж поверху (групи) і прямо під балкою, а не стіна нижчого поверху
     const dx = Math.abs(o[6] - pl[6]);
     if (dx > (prio === 2 ? 64 : 24)) continue; // двері/рамка — майже під балкою; стіна — може бути збоку від проходу
     const score = prio * 1000 + dx;
@@ -225,6 +251,10 @@ for (const pl of placements) {
   if (best) {
     // Балка висить рівно над своєю точкою на землі: та сама екранна x, а глибина — лінії носія (стіни/дверей).
     pl[7] = pl[10] === 2 ? (best[7] - best[6] / 2) + pl[6] / 2 : (best[7] + best[6] / 2) - pl[6] / 2;
+    // ГЛИБИНА малювання (sy) — теж від носія: перемичка отримує глибину дверей/стіни, на яких висить, на лінії носія в своїй x
+    // (вісь R: лінія йде вниз-праворуч, L: вгору-праворуч; нахил ½). Тож персонаж у прорізі за лінією — під нею, перед лінією — над нею.
+    pl[12] = best[12] + (pl[10] === 2 ? 0.5 : -0.5) * (pl[11] - best[11]);
+    beamDepth.push(`${pl[0]} (${Math.round(pl[11])}, ${Math.round(pl[12])}) <- ${tiles[best[0]].kind}`);
   }
   else warnings.push(`балка в (${Math.round(pl[6])}, ${Math.round(pl[7])}) без дверей/стіни під нею — глибина за її власною точкою`);
 }
@@ -252,6 +282,15 @@ const collisions = raw.collisions
   .filter((c) => c.shape === "poly" && c.type === "solid")
   .map((c) => ({ id: c.id, floor: floorOf(c), pts: c.pts.map((q) => [q.x, q.y]) }));
 collisions.push(...autoPolys);
+// Однакові колізії (той самий поверх і ті самі вершини — намальовані двічі або від дубля стіни) лишаємо одну.
+const collisionKeys = new Set();
+const collisionsBefore = collisions.length;
+for (let i = collisions.length - 1; i >= 0; i--) {
+  const c = collisions[i];
+  const key = c.floor + ":" + JSON.stringify(c.pts);
+  if (collisionKeys.has(key)) collisions.splice(i, 1); else collisionKeys.add(key);
+}
+const dupCollisions = collisionsBefore - collisions.length;
 // Зони зміни поверху. Два способи позначити в редакторі, гра розуміє обидва:
 //   floorTransition: onFloor (де діє) + toFloor (куди переносить; fromFloor = onFloor);
 //   trigger з полем floor: onFloor (де діє) + floor (куди переносить).
@@ -314,6 +353,19 @@ for (const d of doors) {
 const kindCounts = {};
 for (const pl of placements) kindCounts[kindOf(pl) || "—"] = (kindCounts[kindOf(pl) || "—"] || 0) + 1;
 
+// --- Звіт збірки: усе, що збірка пропустила або прибрала, — тут, а не мовчки ---
+const report = [];
+if (noPicture.length) {
+  const by = {};
+  for (const n of noPicture) { const k = `${n.group || "без групи"} / ${n.layer}`; (by[k] = by[k] || []).push(n.tileId); }
+  report.push(`ПРОПУЩЕНО ${noPicture.length} розміщень без картинки (тайла немає в палітрі) — на карті їх НЕ буде:`);
+  for (const k in by) report.push(`  - ${k}: ${by[k].length} шт. (тайли ${[...new Set(by[k])].join(", ")})`);
+}
+if (dupPlacements.length) report.push(`Прибрано ${dupPlacements.length} дублів розміщень (той самий тайл у тій самій клітинці): ${dupPlacements.map((d) => `${d.id}=${d.tileId}@${d.x},${d.y}`).join("; ")}`);
+if (dupCollisions) report.push(`Прибрано ${dupCollisions} однакових колізій`);
+for (const h of houses) report.push(`Будинок «${h.name}»: ромбів підлоги ${h.diamonds.length} (поверхи: ${[...new Set(h.diamonds.map((d) => d[0]))].join(", ")})`);
+if (beamDepth.length) report.push(`Перемички з глибиною носія (${beamDepth.length}): ${beamDepth.join("; ")}`);
+console.log("\nЗВІТ ЗБІРКИ:\n" + (report.length ? report.map((l) => (l.startsWith("  ") ? l : "  * " + l)).join("\n") : "  (нічого не пропущено)"));
 console.log(`Автоколізій: ${autoPolys.length}`);
 console.log("Види розміщень:", JSON.stringify(kindCounts));
 if (warnings.length) console.log(`\nПОПЕРЕДЖЕННЯ (${warnings.length}):\n` + warnings.map((w) => "  - " + w).join("\n"));
@@ -327,7 +379,7 @@ fs.rmSync(OUT_TILES, { recursive: true, force: true });
 fs.mkdirSync(OUT_TILES, { recursive: true });
 for (const [id, buf] of pngOut) fs.writeFileSync(path.join(OUT_TILES, `${id}.png`), buf);
 fs.writeFileSync("data/server-map.json", JSON.stringify({ name: raw.name, bounds, collisions, transitions: looseTransitions, stairs, floorMask, spawns }));
-fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 6, name: raw.name, bounds, tiles, groups: groups.map(([, g]) => g), placements }));
+fs.writeFileSync("public/assets/map.json", JSON.stringify({ format: 7, name: raw.name, bounds, tiles, groups: groups.map(([, g]) => g), houses, placements }));
 
 // Для режиму ?debug у клієнті (малює колізії поверх карти). Грі НЕ потрібен.
 fs.writeFileSync("public/assets/debug-collisions.json", JSON.stringify(collisions.map((c) => c.pts)));

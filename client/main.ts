@@ -126,16 +126,17 @@ function frame(): void {
 
   const view: View = { left: camX - 8, top: camY - 8, right: camX + viewW + 8, bottom: camY + viewH + 8 };
 
-  // Карта і персонажі: групи (поверхи) по черзі; всередині поверху тайли й персонажі за y точки опори.
+  // Карта і персонажі: групи (земля, поверхи, дах) по черзі; всередині групи тайли за (z, y), персонаж — за y ніг.
   // На сходах глядач "стоїть" на верхньому поверсі сходів (me.st).
   const myFloor = me?.floor ?? 1;
   const myLevel = me?.st || myFloor;
-  map.draw(ctx, view, now, { x: me?.x ?? 0, y: me?.y ?? 0, floor: myFloor, level: myLevel }, players.map((p) => ({
+  const viewer = { x: me?.x ?? 0, y: me?.y ?? 0, floor: myFloor, level: myLevel };
+  map.draw(ctx, view, now, viewer, players.map((p) => ({
     x: p.x, y: p.y, level: p.st || p.floor || 1,
     draw: () => chars.draw(ctx, p, now, p.id === myId),
   })));
 
-  if (debug) { map.drawDebug(ctx, view); drawDebug(view, me ?? null); }
+  if (debug) { map.drawDebug(ctx, view, viewer); drawDebug(view, me ?? null); }
   requestAnimationFrame(frame);
 }
 
