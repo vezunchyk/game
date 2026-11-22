@@ -32,7 +32,7 @@ declare const __BUILD_ID__: string;
 // Мала мітка збірки в куті екрана (видно і в грі, і на скріншоті) — щоб одразу бачити, яка версія клієнта працює.
 {
   const tag = document.createElement("div");
-  tag.textContent = __BUILD_ID__ + " · map v6 · group/y";
+  tag.textContent = __BUILD_ID__ + " · map v7 · шар/z/y";
   tag.style.cssText = "position:fixed;left:6px;bottom:4px;z-index:50;font:10px monospace;color:#fff;opacity:.55;pointer-events:none";
   document.body.appendChild(tag);
   $("login-status").textContent = "збірка: " + __BUILD_ID__;
@@ -40,7 +40,6 @@ declare const __BUILD_ID__: string;
 const conn = new Connection();
 const interp = new Interpolation();
 const map = new MapRenderer();
-map.debug = debug;
 const chars = new CharacterRenderer();
 const joystick = new Joystick($("joy-zone"));
 const keyboard = new Keyboard();
@@ -126,17 +125,16 @@ function frame(): void {
 
   const view: View = { left: camX - 8, top: camY - 8, right: camX + viewW + 8, bottom: camY + viewH + 8 };
 
-  // Карта і персонажі: групи (земля, поверхи, дах) по черзі; всередині групи тайли за (z, y), персонаж — за y ніг.
-  // На сходах глядач "стоїть" на верхньому поверсі сходів (me.st).
+  // Карта і персонажі: шар -> z -> y (як у редакторі). Персонаж малюється у групі свого поверху за y ніг.
+  // На сходах глядач і персонаж "стоять" на верхньому поверсі сходів (st).
   const myFloor = me?.floor ?? 1;
   const myLevel = me?.st || myFloor;
-  const viewer = { x: me?.x ?? 0, y: me?.y ?? 0, floor: myFloor, level: myLevel };
-  map.draw(ctx, view, now, viewer, players.map((p) => ({
+  map.draw(ctx, view, now, { x: me?.x ?? 0, y: me?.y ?? 0, floor: myFloor, level: myLevel }, players.map((p) => ({
     x: p.x, y: p.y, level: p.st || p.floor || 1,
     draw: () => chars.draw(ctx, p, now, p.id === myId),
   })));
 
-  if (debug) { map.drawDebug(ctx, view, viewer); drawDebug(view, me ?? null); }
+  if (debug) { map.drawDebug(ctx, view); drawDebug(view, me ?? null); }
   requestAnimationFrame(frame);
 }
 

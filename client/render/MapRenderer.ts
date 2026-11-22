@@ -1,41 +1,56 @@
 // ============================================================================
 // client/render/MapRenderer.ts
-// Малює карту з TileWeaver. Одне ядро порядку для всіх будинків:
+// Малює карту з TileWeaver. Порядок такий самий, як у редакторі:
 //
-//   1. ГРУПИ йдуть по черзі: земля (трава), поверх 1, поверх 2, ..., дах. Група шару задається одним рядком
-//      у map-src/render-rules.json. Папки, види тайлів і «плоске» порядок НЕ вирішують.
-//   2. Усередині групи тайли йдуть за z, при рівному z — за y точки опори (sy).
-//   3. Персонаж сортується ТІЛЬКИ за y ніг (z на нього не діє) відносно тайлів СВОГО поверху: тайли з sy < y ніг
-//      малюються до нього, решта (рівні y теж: тайл над персонажем) — після. Між собою тайли зберігають порядок (z, sy).
-//   4. Перемичка над дверима отримує sy дверей/стіни, на яких висить (це робить збірка карти), тому в прорізі
-//      персонаж за лінією — під нею, перед лінією — над нею. Сходи без спецправил: вони самі стоять над стіною за z і y,
-//      а персонаж на них малюється в поверсі, на який піднявся (level).
+//   ШАР -> Z -> Y
 //
-// Будинок = група з редактора (houses у map.json). «Я в будинку» — ноги на ромбі підлоги цього будинку
-// (з запасом у кілька px). Усередині: поверхи вище поточного і дах гаснуть, нижні лишаються видимими.
+//   1. Групи малювання (з шарів редактора, див. map-src/render-rules.json), від нижньої до верхньої:
+//        ground (трава) -> поверх 1 -> поверх 2 -> ... -> дах.
+//   2. Усередині групи тайли йдуть за z, при рівному z — за y точки опори (чим нижче на екрані, тим пізніше).
+//      Єдиний виняток — підлога-ромб (ground=1): вона малюється першою у своєму поверсі, бо її ніщо не закриває
+//      і по ній ходять. Усе інше (стіни, сходи, перемички, бордюр) — за z і y, без правил «для цього виду».
+//   3. Персонаж — у групі свого поверху. З тайлами він порівнюється лише за y ніг (z на нього не діє):
+//      малюється перед першим тайлом, який його перекриває і стоїть не вище за його ноги (sy >= y).
+//      Рівні y: тайл над персонажем. Персонаж на сходах має level верхнього поверху.
+//
+// БУДИНОК = група з редактора (напр. «б1», поле group у розміщення). «Я в будинку» = ноги стоять на ромбі підлоги
+// цього будинку на моєму поверсі. Тоді поверхи вище мого і дах цього будинку гаснуть; нижні поверхи не чіпаємо.
+// Тайли без групи (трава) ніколи не гаснуть і нічого не вмикають.
 // ============================================================================
 
 /** Як швидко верх будинку зникає/з'являється (за секунду, 0..1). */
 const FADE_PER_SEC = 5;
-/** Запас (px) навколо ромба підлоги: ноги «в будинку» трохи раніше, ніж на самому ромбі. */
-const INSIDE_PAD_X = 4;
-const INSIDE_PAD_Y = 3;
+/** Запас навколо ромба підлоги (світові px), щоб «в будинку» не мигало на порозі. */
+const INSIDE_PAD_X = 8;
+const INSIDE_PAD_Y = 4;
+/** Прямокутник персонажа для перевірки «перекриває»: від ніг вгору. */
+const ACTOR_HALF_W = 24;
+const ACTOR_H = 64;
+/** Ключ даху в прозорості будинку (вище будь-якого поверху). */
+const ROOF_KEY = 1000;
 
-interface TileInfo { w: number; h: number; frames: number; frameMs: number; loop: number; }
-/** floor 0 і roof 0 — земля; floor N — поверх N; roof 1 — дах. */
+interface TileInfo {
+  w: number; h: number; frames: number; frameMs: number; loop: number;
+  /** 1 = підлога-ромб. */
+  ground?: number;
+}
 interface GroupInfo { floor: number; roof: number; }
-/** Будинок: група з редактора. diamonds: [поверх, cx, cy, піввисота-x, піввисота-y] ромбів підлоги. */
-export interface HouseInfo { name: string; diamonds: [number, number, number, number, number][]; }
 
-/** [id, x0, y0, z, key, flags(1=flipX,2=flipY), gx, gy, pvx, pvy, axis, ax, sy, група, будинок(-1 = ніякий)] — клієнту потрібні не всі. */
-export type Placement = [string, number, number, number, number, number, number, number, number, number, number, number, number, number, number];
+/** [id, x0, y0, z, key, flags(1=flipX,2=flipY), gx, gy, pvx, pvy, axis, ax, sy, група, будинок(0 = немає, інакше номер у buildings з 1)] */
+export type Placement = [string, number, number, number, number, number, number, number, number, number, number, number, number, number, number?];
+
+export interface BuildingInfo {
+  name: string;
+  /** Ромби підлоги за номером поверху: [центр x, центр y, півширина, піввисота]. */
+  floors: Record<string, [number, number, number, number][]>;
+}
 
 export interface MapFile {
   format?: number;
   bounds: { minX: number; minY: number; maxX: number; maxY: number };
   tiles: Record<string, TileInfo>;
   groups: GroupInfo[];
-  houses?: HouseInfo[];
+  buildings?: BuildingInfo[];
   placements: Placement[];
 }
 
@@ -50,35 +65,43 @@ interface Item {
   /** Точка, навколо якої віддзеркалюється. */
   pvx: number; pvy: number;
   z: number;
-  /** Точка опори: за sy сортуємо (разом з персонажами за y ніг). */
+  /** Точка опори: за sy сортуємо. */
   ax: number; sy: number;
-  house: House | null;
+  ground: boolean;
+  /** Поверх тайла (0 = ground-шар, ROOF_KEY = дах); разом з building визначає, коли тайл гасне. */
+  floor: number;
+  building: Building | null;
 }
 
-/** Персонаж: сортується лише за y ніг серед тайлів свого поверху. */
+interface Building {
+  name: string;
+  floors: Map<number, [number, number, number, number][]>;
+  /** Поточна прозорість за ключем поверху (ROOF_KEY — дах). */
+  alpha: Map<number, number>;
+}
+
+/** Група малювання: підлоги (першими) і решта (разом з персонажами). */
+interface Group {
+  floor: number;
+  roof: boolean;
+  under: Item[];
+  stand: Item[];
+}
+
+/** Хто в кадрі: персонаж у цілих світових координатах (ноги) і поверх, на якому його малювати. */
 export interface Actor {
   x: number; y: number;
-  /** Поверх, на якому він стоїть (на сходах — верхній). */
   level: number;
   draw: () => void;
 }
 
-/** Хто дивиться: його поверх, поверх для малювання (на сходах — верхній) і позиція ніг. */
+/** Глядач (моя камера): ноги, поверх, на якому я зараз, і рівень малювання (на сходах — верхній поверх). */
 export interface Viewer { x: number; y: number; floor: number; level: number; }
-
-interface Group { floor: number; roof: boolean; items: Item[]; }
-
-/** Будинок: прозорість кожної групи (за індексом у groups) плавно йде до цілі. */
-interface House {
-  name: string;
-  diamonds: HouseInfo["diamonds"];
-  alpha: number[];
-}
 
 export class MapRenderer {
   bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
   private groups: Group[] = [];
-  private houses: House[] = [];
+  private buildings: Building[] = [];
   private lastFadeTime = 0;
 
   async load(): Promise<void> {
@@ -110,115 +133,108 @@ export class MapRenderer {
   /** Будує списки малювання з даних карти (окремо від завантаження — щоб перевіряти в тестах без браузера). */
   build(map: MapFile, imgs: Map<string, HTMLImageElement>): void {
     this.bounds = map.bounds;
-    this.groups = map.groups.map((g) => ({ floor: g.floor, roof: g.roof === 1, items: [] }));
-    this.houses = (map.houses ?? []).map((h) => ({ name: h.name, diamonds: h.diamonds, alpha: map.groups.map(() => 1) }));
+    this.groups = map.groups.map((g) => ({ floor: g.floor, roof: g.roof === 1, under: [], stand: [] }));
+    this.buildings = (map.buildings ?? []).map((b) => ({
+      name: b.name,
+      floors: new Map<number, [number, number, number, number][]>(Object.entries(b.floors).map(([n, d]): [number, [number, number, number, number][]] => [Number(n), d])),
+      alpha: new Map<number, number>(),
+    }));
     for (const p of map.placements) {
       const t = map.tiles[p[0]]!;
-      const img = imgs.get(p[0]);
-      if (!img) continue;
-      this.groups[p[13]]!.items.push({
-        img, x: p[1], y: p[2], w: t.w / t.frames, h: t.h,
+      const g = this.groups[p[13]]!;
+      const building = p[14] ? (this.buildings[p[14] - 1] ?? null) : null;
+      const floor = g.roof ? ROOF_KEY : g.floor;
+      const item: Item = {
+        img: imgs.get(p[0])!, x: p[1], y: p[2], w: t.w / t.frames, h: t.h,
         frames: t.frames, frameMs: t.frameMs, loop: t.loop === 1,
         flipX: (p[5] & 1) !== 0, flipY: (p[5] & 2) !== 0, pvx: p[8], pvy: p[9],
-        z: p[3], ax: p[11], sy: p[12],
-        house: p[14] >= 0 ? this.houses[p[14]] ?? null : null,
-      });
+        z: p[3], ax: p[11], sy: p[12], ground: t.ground === 1, floor, building,
+      };
+      if (building) building.alpha.set(floor, 1);
+      // Нижня група (трава) і дах — просто за (z, y); у поверхах підлога йде першою.
+      const underGroup = g.roof || g.floor === 0 || item.ground;
+      (underGroup ? g.under : g.stand).push(item);
     }
-    // Array.sort стабільний: рівні елементи лишаються в порядку файлу.
-    for (const g of this.groups) g.items.sort((a, b) => a.z - b.z || a.sy - b.sy);
+    const byZY = (a: Item, b: Item) => a.z - b.z || a.sy - b.sy;
+    for (const g of this.groups) { g.under.sort(byZY); g.stand.sort(byZY); }
   }
 
-  /** Малює кадр: групи по черзі; персонаж ділить тайли свого поверху на «за ним» і «перед ним» за y ніг. */
+  /** Кадр: групи по черзі; у кожному поверсі — підлога, далі тайли й персонажі. Прозорість — за будинком. */
   draw(ctx: CanvasRenderingContext2D, v: View, now: number, viewer: Viewer, actors: Actor[]): void {
     this.fade(viewer, now);
-    // Персонаж іде в найвищий поверх (не землю і не дах), що не вищий за його власний рівень.
-    const floorGroups = this.groups.map((g, i) => ({ g, i })).filter((e) => !e.g.roof && e.g.floor >= 1);
-    const byGroup = new Map<number, Actor[]>();
+    const floorGroups = this.groups.filter((g) => !g.roof && g.floor >= 1);
+    const actorsOf = new Map<Group, Actor[]>();
     for (const a of actors) {
-      let target = floorGroups[0];
-      for (const e of floorGroups) if (e.g.floor <= a.level) target = e;
+      // Поверх персонажа: найвища група, що не вища за його level (нижчої немає — найнижча).
+      let target: Group | undefined;
+      for (const g of floorGroups) if (g.floor <= a.level) target = g;
+      target ??= floorGroups[0];
       if (!target) continue;
-      const list = byGroup.get(target.i);
-      if (list) list.push(a); else byGroup.set(target.i, [a]);
+      let list = actorsOf.get(target);
+      if (!list) actorsOf.set(target, (list = []));
+      list.push(a);
     }
-    this.groups.forEach((g, gi) => {
-      const acts = (byGroup.get(gi) ?? []).sort((a, b) => a.y - b.y);
-      if (acts.length === 0) {
-        for (const it of g.items) this.drawItem(ctx, it, v, now, this.alphaOf(it, gi));
-        return;
+
+    for (const g of this.groups) {
+      for (const it of g.under) this.drawItem(ctx, it, v, now);
+      const acts = actorsOf.get(g);
+      if (!acts) { for (const it of g.stand) this.drawItem(ctx, it, v, now); continue; }
+      // Для кожного персонажа — індекс першого тайла, що його перекриває і стоїть не вище за його ноги.
+      const slots = acts.map((a) => ({ a, at: this.slotOf(g.stand, a) })).sort((p, q) => p.at - q.at || p.a.y - q.a.y);
+      let j = 0;
+      for (let i = 0; i < g.stand.length; i++) {
+        while (j < slots.length && slots[j]!.at <= i) slots[j++]!.a.draw();
+        this.drawItem(ctx, g.stand[i]!, v, now);
       }
-      // Тайл малюється після тих персонажів, чия y ≤ його sy (рівні — тайл над персонажем), і до решти.
-      const buckets: Item[][] = Array.from({ length: acts.length + 1 }, () => []);
-      for (const it of g.items) {
-        if (!this.visible(it, v)) continue;
-        let lo = 0, hi = acts.length; // скільки персонажів мають y ≤ it.sy
-        while (lo < hi) { const mid = (lo + hi) >> 1; if (acts[mid]!.y <= it.sy) lo = mid + 1; else hi = mid; }
-        buckets[lo]!.push(it);
-      }
-      for (let k = 0; k <= acts.length; k++) {
-        for (const it of buckets[k]!) this.drawItem(ctx, it, v, now, this.alphaOf(it, gi));
-        if (k < acts.length) acts[k]!.draw();
-      }
-    });
+      while (j < slots.length) slots[j++]!.a.draw();
+    }
   }
 
-  /** ?debug: точки опори всіх тайлів (жовті) і ромби підлоги будинків (блакитні; червоні — коли ти «в будинку»). */
-  drawDebug(ctx: CanvasRenderingContext2D, v: View, viewer?: Viewer): void {
+  /** ?debug: точки опори (за ними сортується) всіх тайлів у кадрі. */
+  drawDebug(ctx: CanvasRenderingContext2D, v: View): void {
     ctx.fillStyle = "rgba(255,230,0,0.95)";
     for (const g of this.groups) {
-      if (g.floor === 0 && !g.roof) continue; // трава: тисячі точок — зайве
-      for (const it of g.items) {
+      for (const it of g.stand) {
         if (it.ax < v.left || it.ax > v.right || it.sy < v.top || it.sy > v.bottom) continue;
         ctx.fillRect(it.ax - 1, it.sy - 1, 3, 3);
       }
     }
-    ctx.lineWidth = 1;
-    for (const h of this.houses) {
-      const inside = viewer ? this.isInside(h, viewer) : false;
-      ctx.strokeStyle = inside ? "rgba(255,60,60,0.9)" : "rgba(0,200,255,0.7)";
-      for (const [, cx, cy, hw, hh] of h.diamonds) {
-        ctx.beginPath();
-        ctx.moveTo(cx, cy - hh); ctx.lineTo(cx + hw, cy); ctx.lineTo(cx, cy + hh); ctx.lineTo(cx - hw, cy); ctx.closePath();
-        ctx.stroke();
-      }
+  }
+
+  /** Місце персонажа в списку: перед першим видимим тайлом, який його перекриває і має sy >= y ніг. */
+  private slotOf(list: Item[], a: Actor): number {
+    const left = a.x - ACTOR_HALF_W, right = a.x + ACTOR_HALF_W, top = a.y - ACTOR_H, bottom = a.y;
+    for (let i = 0; i < list.length; i++) {
+      const it = list[i]!;
+      if (it.sy < a.y) continue;
+      if (it.x >= right || it.x + it.w <= left || it.y >= bottom || it.y + it.h <= top) continue;
+      if (this.alphaOf(it) <= 0.01) continue;
+      return i;
     }
+    return list.length;
   }
 
-  /** Прозорість тайла: тайли будинку гаснуть разом з будинком, решта завжди видима. */
-  private alphaOf(it: Item, gi: number): number {
-    return it.house ? it.house.alpha[gi] ?? 1 : 1;
+  /** Прозорість тайла: лише тайли будинку (з групою), і лише ті, що вище за мій поверх або дах. */
+  private alphaOf(it: Item): number {
+    return it.building ? (it.building.alpha.get(it.floor) ?? 1) : 1;
   }
 
-  /** «Я в будинку»: ноги стоять на ромбі підлоги цього будинку (свого поверху або поверху, куди піднявся). */
-  private isInside(h: House, viewer: Viewer): boolean {
-    for (const [f, cx, cy, hw, hh] of h.diamonds) {
-      if (f !== viewer.floor && f !== viewer.level) continue;
-      if (Math.abs(viewer.x - cx) / (hw + INSIDE_PAD_X) + Math.abs(viewer.y - cy) / (hh + INSIDE_PAD_Y) <= 1) return true;
-    }
-    return false;
-  }
-
-  /** Плавно змінює прозорість будинків: усередині — поверхи вище поточного і дах гаснуть, нижні лишаються. */
+  /** Плавно змінює прозорість будинків: я на ромбі підлоги будинку — поверхи вище мого поверху і дах гаснуть. */
   private fade(viewer: Viewer, now: number): void {
     const dt = this.lastFadeTime ? Math.min(0.1, (now - this.lastFadeTime) / 1000) : 0;
     this.lastFadeTime = now;
     const step = (cur: number, target: number) => cur + Math.sign(target - cur) * Math.min(Math.abs(target - cur), FADE_PER_SEC * dt);
-    for (const h of this.houses) {
-      const inside = this.isInside(h, viewer);
-      this.groups.forEach((g, gi) => {
-        const hidden = inside && (g.roof || g.floor > viewer.level);
-        h.alpha[gi] = step(h.alpha[gi] ?? 1, hidden ? 0 : 1);
-      });
+    for (const b of this.buildings) {
+      const inside = (b.floors.get(viewer.floor) ?? []).some(([cx, cy, hw, hh]) =>
+        Math.abs(viewer.x - cx) / (hw + INSIDE_PAD_X) + Math.abs(viewer.y - cy) / (hh + INSIDE_PAD_Y) <= 1);
+      for (const [key, cur] of b.alpha) b.alpha.set(key, step(cur, inside && key > viewer.floor ? 0 : 1));
     }
   }
 
-  private visible(it: Item, v: View): boolean {
-    return !(it.x >= v.right || it.x + it.w <= v.left || it.y >= v.bottom || it.y + it.h <= v.top);
-  }
-
-  private drawItem(ctx: CanvasRenderingContext2D, it: Item, v: View, now: number, alpha: number): void {
+  private drawItem(ctx: CanvasRenderingContext2D, it: Item, v: View, now: number): void {
+    const alpha = this.alphaOf(it);
     if (alpha <= 0.01) return;
-    if (!this.visible(it, v)) return;
+    if (it.x >= v.right || it.x + it.w <= v.left || it.y >= v.bottom || it.y + it.h <= v.top) return;
     // Як у редакторі: анімація стоїть на кадрі 1, а крутиться лише з галочкою "Грати постійно".
     const frame = it.frames > 1 && it.loop ? Math.floor(now / it.frameMs) % it.frames : 0;
     if (alpha < 1) ctx.globalAlpha = alpha;
