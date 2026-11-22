@@ -40,6 +40,8 @@ client/                 Тільки введення і малювання
   input/Keyboard.ts       WASD / стрілки
   input/InputController   зводить введення в ОДИН вектор і шле серверу
   render/MapRenderer.ts   малювання карти і порядок глибини
+                          (за замовчуванням порядок «як у Unity»: тайли і гравці сортуються за y опорної точки;
+                           ?old в адресі — старий порядок, ?debug — підписи і колізії)
   render/CharacterRenderer.ts   спрайт, 8 напрямків, анімація
   render/Interpolation.ts       згладжування між знімками сервера
 

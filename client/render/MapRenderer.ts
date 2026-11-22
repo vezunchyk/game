@@ -8,10 +8,12 @@
 //   * поверх (floor) і позначка «Дах» — з розміщення в редакторі.
 // Тут немає жодних винятків «для цього будинку»: лише таблиця KIND_LAYER і одне правило глибини.
 //
-// Порядок кадру (малює main.ts):
-//   1. drawBase     — усе, що НИЖЧЕ або НА рівні глядача (плоске і вертикальне, в порядку редактора);
-//   2. персонаж, а поверх нього drawOver — вертикальне, що стоїть ПЕРЕД ним (лише в межах спрайта);
-//   3. drawUpper    — дах і те, що ВИЩЕ глядача; над глядачем усередині будинку плавно зникає.
+// Порядок кадру (малює main.ts), режим «як у Unity» (за замовчуванням):
+//   1. drawScene    — рівень за рівнем (нижчі першими): спочатку плоске (підлога), потім ВСЕ вертикальне і
+//                     ПЕРСОНАЖІ в одному списку, відсортованому за глибиною опорної точки (чим нижче точка на
+//                     екрані — тим пізніше малюється). Так само сортує Unity (Transparency Sort Axis = (0,1,..)).
+//   2. drawUpper    — дах і те, що ВИЩЕ глядача; над глядачем усередині будинку плавно зникає.
+// Старий режим (?old в адресі): drawBase -> персонаж -> drawOver (перемальовка стін поверх) -> drawUpper.
 // ============================================================================
 
 /** Як швидко верх будинку зникає/з'являється (за секунду, 0..1). */
@@ -27,6 +29,11 @@ const ROOF_GROUP_GAP = 24;
 const DEPTH_TOL = 6;
 /** Наскільки глибоко в товщу стіни (px) гравець ще «під балкою» над проходом. */
 const BEAM_DEPTH = 14;
+/**
+ * Режим «як у Unity»: опорна точка персонажа для сортування лежить НА стільки px нижче його ніг
+ * (той самий допуск, що DEPTH_TOL: колізії стін пускають гравця на кілька px «за» лінію основи стіни).
+ */
+const ACTOR_DEPTH_BIAS = DEPTH_TOL;
 
 /**
  * Шар малювання за видом тайла:
@@ -88,12 +95,30 @@ interface RoofGroup {
 
 export interface View { left: number; top: number; right: number; bottom: number; }
 
+/** Персонаж для drawScene: сортується разом з вертикальними тайлами за глибиною (y ніг). */
+export interface Actor {
+  /** Точка ніг (світові px). */
+  x: number; y: number;
+  /** Рівень, на якому він стоїть (на сходах — верхній). */
+  level: number;
+  /** Прямокутник спрайта (лише для діагностики ?debug). */
+  rect: View;
+  /** Намалювати саме персонажа. */
+  draw: () => void;
+}
+
 export class MapRenderer {
   /** ?debug: що саме перемальовано поверх гравця в цьому кадрі (для діагностики порядку малювання). */
   debugMarks: { x: number; y: number; w: number; h: number; label: string; beam: boolean }[] = [];
   bounds = { minX: 0, minY: 0, maxX: 0, maxY: 0 };
-  /** Не-дахові тайли за рівнями, у порядку редактора. */
-  private levels = new Map<number, { base: DrawItem[]; vertical: DrawItem[] }>();
+  /** ?debug: у режимі drawScene записувати тайли, що опинились поверх персонажа. */
+  debug = false;
+  /**
+   * Не-дахові тайли за рівнями:
+   *   base/vertical — в порядку редактора (старий режим); flat — плоске; depth — вертикальне за глибиною
+   *   опорної точки (режим «як у Unity»); beams — балки (персонаж у прорізі під балкою).
+   */
+  private levels = new Map<number, { base: DrawItem[]; vertical: DrawItem[]; flat: DrawItem[]; depth: DrawItem[]; beams: DrawItem[] }>();
   private levelOrder: number[] = [];
   private roofGroups: RoofGroup[] = [];
   private lastRoofTime = 0;
@@ -144,9 +169,10 @@ export class MapRenderer {
       if (item.layer === "roof" || item.level >= 2) upper.push(item);
       if (item.layer !== "roof") {
         let lv = this.levels.get(item.level);
-        if (!lv) this.levels.set(item.level, (lv = { base: [], vertical: [] }));
+        if (!lv) this.levels.set(item.level, (lv = { base: [], vertical: [], flat: [], depth: [], beams: [] }));
         lv.base.push(item);
-        if (item.layer === "vertical") lv.vertical.push(item);
+        if (item.layer === "vertical") { lv.vertical.push(item); lv.depth.push(item); if (item.kind === "beam") lv.beams.push(item); }
+        else lv.flat.push(item);
       }
       // Слід будинку задають ЗОВНІШНІ стіни першого рівня (внутрішні всередині нічого не міняють).
       if (item.kind === "wall" && !item.interior && item.level === 1) footprint.push([ax, ay]);
@@ -154,7 +180,11 @@ export class MapRenderer {
 
     // Порядок редактора: (z, y). Array.sort стабільний — рівні елементи лишаються як у файлі.
     const byEditor = (a: DrawItem, b: DrawItem) => a.z - b.z || a.key - b.key;
-    for (const lv of this.levels.values()) { lv.base.sort(byEditor); lv.vertical.sort(byEditor); }
+    // Режим «як у Unity»: вертикальне — за y опорної точки (далі від камери першим), рівні — як у редакторі.
+    const byDepth = (a: DrawItem, b: DrawItem) => a.anchorY - b.anchorY || byEditor(a, b);
+    for (const lv of this.levels.values()) {
+      lv.base.sort(byEditor); lv.vertical.sort(byEditor); lv.flat.sort(byEditor); lv.depth.sort(byDepth);
+    }
     this.levelOrder = [...this.levels.keys()].sort((a, b) => a - b);
 
     this.roofGroups = groupRoofs(upper, byEditor);
@@ -184,6 +214,72 @@ export class MapRenderer {
         } else this.drawItem(ctx, it, v, now);
       }
     }
+  }
+
+  /**
+   * Режим «як у Unity»: усе, що на рівні глядача і нижче, + персонажі. Для кожного рівня (нижчі першими):
+   * плоске в порядку редактора, потім вертикальне і персонажі за глибиною опорної точки (y; більше = ближче).
+   * Персонаж сортується за y ніг + ACTOR_DEPTH_BIAS. Виняток один: балка над персонажем, що стоїть у прорізі
+   * під нею, малюється відразу ПІСЛЯ нього. Персонажі вище за глядача малюються після всіх рівнів (їх накриває верх).
+   */
+  drawScene(ctx: CanvasRenderingContext2D, v: View, now: number, viewerFloor: number, drawLevel: number, actors: Actor[]): void {
+    const lvls = this.levelOrder.filter((l) => l <= drawLevel);
+    // Персонаж йде в найвищий рівень карти, що не вищий за його власний.
+    const byLevel = new Map<number, Actor[]>();
+    const rest: Actor[] = [];
+    for (const a of actors) {
+      let target: number | undefined;
+      if (a.level <= drawLevel) for (const l of lvls) if (l <= a.level) target = l;
+      if (target === undefined) { rest.push(a); continue; }
+      const list = byLevel.get(target);
+      if (list) list.push(a); else byLevel.set(target, [a]);
+    }
+    for (const lvl of lvls) {
+      const lv = this.levels.get(lvl)!;
+      for (const it of lv.flat) this.drawDimmed(ctx, it, v, now, viewerFloor);
+      const acts = (byLevel.get(lvl) ?? []).sort((a, b) => a.y - b.y);
+      // Балки над персонажами, що стоять у прорізі під ними.
+      const beamAfter = new Map<Actor, DrawItem[]>();
+      const skip = new Set<DrawItem>();
+      for (const a of acts) {
+        for (const b of lv.beams) {
+          if (!isUnderBeam(b, a.x, a.y)) continue;
+          skip.add(b);
+          const l = beamAfter.get(a);
+          if (l) l.push(b); else beamAfter.set(a, [b]);
+        }
+      }
+      const drawn: Actor[] = [];
+      const putActor = (a: Actor) => {
+        a.draw();
+        drawn.push(a);
+        for (const b of beamAfter.get(a) ?? []) this.drawDimmed(ctx, b, v, now, viewerFloor);
+      };
+      let j = 0;
+      for (const it of lv.depth) {
+        if (skip.has(it)) continue;
+        // Спершу ті, хто ДАЛІ від камери за цей тайл (їхня точка вища на екрані).
+        while (j < acts.length && acts[j]!.y + ACTOR_DEPTH_BIAS < it.anchorY) putActor(acts[j++]!);
+        if (this.debug) {
+          for (const a of drawn) {
+            const r = a.rect;
+            if (it.x >= r.right || it.x + it.w <= r.left || it.y >= r.bottom || it.y + it.h <= r.top) continue;
+            this.debugMarks.push({ x: it.x, y: it.y, w: it.w, h: it.h, beam: false, label: `${it.kind}${it.interior ? "/внутр" : ""} f${it.floor} sortY ${Math.round(it.anchorY)}` });
+          }
+        }
+        this.drawDimmed(ctx, it, v, now, viewerFloor);
+      }
+      while (j < acts.length) putActor(acts[j++]!);
+    }
+    for (const a of rest.sort((p, q) => p.y - q.y)) a.draw();
+  }
+
+  private drawDimmed(ctx: CanvasRenderingContext2D, it: DrawItem, v: View, now: number, viewerFloor: number): void {
+    if (isDimmed(it, viewerFloor)) {
+      ctx.globalAlpha = LOWER_FLOOR_ALPHA;
+      this.drawItem(ctx, it, v, now);
+      ctx.globalAlpha = 1;
+    } else this.drawItem(ctx, it, v, now);
   }
 
   /**

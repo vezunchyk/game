@@ -28,12 +28,14 @@ const ERROR_TEXT: Record<ErrorCode, string> = {
 const canvas = $<HTMLCanvasElement>("game");
 const ctx = canvas.getContext("2d")!;
 const debug = new URLSearchParams(location.search).has("debug");
+// ?old в адресі — старий порядок малювання (drawBase/drawOver); за замовчуванням — «як у Unity» (drawScene).
+const oldRender = new URLSearchParams(location.search).has("old");
 
 declare const __BUILD_ID__: string;
 // Мала мітка збірки в куті екрана (видно і в грі, і на скріншоті) — щоб одразу бачити, яка версія клієнта працює.
 {
   const tag = document.createElement("div");
-  tag.textContent = __BUILD_ID__ + " · map v3";
+  tag.textContent = __BUILD_ID__ + " · map v3 · " + (oldRender ? "sort old" : "sort unity");
   tag.style.cssText = "position:fixed;left:6px;bottom:4px;z-index:50;font:10px monospace;color:#fff;opacity:.55;pointer-events:none";
   document.body.appendChild(tag);
   $("login-status").textContent = "збірка: " + __BUILD_ID__;
@@ -41,6 +43,7 @@ declare const __BUILD_ID__: string;
 const conn = new Connection();
 const interp = new Interpolation();
 const map = new MapRenderer();
+map.debug = debug;
 const chars = new CharacterRenderer();
 const joystick = new Joystick($("joy-zone"));
 const keyboard = new Keyboard();
@@ -129,14 +132,21 @@ function frame(): void {
   // Карта: усе, що на рівні глядача і нижче. На сходах глядач "стоїть" на верхньому поверсі сходів (me.st).
   const myFloor = me?.floor ?? 1;
   const myLevel = me?.st || myFloor;
-  map.drawBase(ctx, view, now, myFloor, myLevel);
-
-  // Гравці (від дальніх до ближніх). Стіни, що стоять перед гравцем, перемальовуються поверх нього.
-  const sortedPlayers = [...players].sort((a, b) => a.y - b.y);
-  for (const p of sortedPlayers) {
-    chars.draw(ctx, p, now, p.id === myId);
-    const rect: View = { left: p.x - 26, top: p.y - SPRITE_H - 2, right: p.x + 26, bottom: p.y + 8 };
-    map.drawOver(ctx, view, now, rect, p.x, p.y, p.st || p.floor || 1, myLevel, myFloor);
+  const rectOf = (p: { x: number; y: number }): View => ({ left: p.x - 26, top: p.y - SPRITE_H - 2, right: p.x + 26, bottom: p.y + 8 });
+  if (oldRender) {
+    // Старий порядок: карта в порядку редактора, гравці від дальніх до ближніх, стіни перед гравцем — перемальовка поверх нього.
+    map.drawBase(ctx, view, now, myFloor, myLevel);
+    const sortedPlayers = [...players].sort((a, b) => a.y - b.y);
+    for (const p of sortedPlayers) {
+      chars.draw(ctx, p, now, p.id === myId);
+      map.drawOver(ctx, view, now, rectOf(p), p.x, p.y, p.st || p.floor || 1, myLevel, myFloor);
+    }
+  } else {
+    // Як у Unity: тайли і гравці — один список, за глибиною опорної точки.
+    map.drawScene(ctx, view, now, myFloor, myLevel, players.map((p) => ({
+      x: p.x, y: p.y, level: p.st || p.floor || 1, rect: rectOf(p),
+      draw: () => chars.draw(ctx, p, now, p.id === myId),
+    })));
   }
 
   // Дахи — поверх усього; над гравцем у будинку вони плавно зникають.
