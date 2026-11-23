@@ -152,12 +152,12 @@ const layerRules = rules.layers || {};
 const layerById = new Map((raw.layers || []).map((l) => [l.id, l]));
 for (const l of raw.layers || []) {
   const r = layerRules[l.name];
-  if (!r || (!r.roof && !r.ground && !(r.floor >= 1))) errors.push(`шар «${l.name}» не описаний у map-src/render-rules.json (layers): вкажи {"ground": true}, {"floor": N} або {"roof": true}`);
+  if (!r || (!r.roof && !(r.floor >= 1))) errors.push(`шар «${l.name}» не описаний у map-src/render-rules.json (layers): вкажи {"floor": N} або {"roof": true}`);
 }
-const groupKey = (r) => (r.roof ? "roof" : r.ground ? "ground" : "floor" + r.floor);
+const groupKey = (r) => (r.roof ? "roof" : "floor" + r.floor);
 const groupDefs = new Map(); // key -> { floor, roof }
 const ruleOfLayer = (l) => (l && layerRules[l.name]) || { floor: 1 };
-for (const l of raw.layers || []) { const r = ruleOfLayer(l); groupDefs.set(groupKey(r), r.roof ? { floor: 0, roof: 1 } : r.ground ? { floor: 0, roof: 0 } : { floor: r.floor, roof: 0 }); }
+for (const l of raw.layers || []) { const r = ruleOfLayer(l); groupDefs.set(groupKey(r), r.roof ? { floor: 0, roof: 1 } : { floor: r.floor, roof: 0 }); }
 groupDefs.set("floor1", { floor: 1, roof: 0 });
 groupDefs.set("roof", groupDefs.get("roof") || { floor: 0, roof: 1 });
 const groups = [...groupDefs.entries()].sort((a, b) => a[1].roof - b[1].roof || a[1].floor - b[1].floor);
