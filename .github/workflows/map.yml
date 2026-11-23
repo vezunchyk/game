@@ -1,1 +1,34 @@
-ш
+# Покласти в репозиторій як .github/workflows/map.yml
+# Робить: коли в корінь репозиторію залито файл карти з редактора (tileweaver_....json),
+# GitHub сам збирає карту (картинки, колізії, будинки), коммітить результат і видаляє залитий файл.
+# Звіт збірки (ПОПЕРЕДЖЕННЯ: тайли без картинок, дублі) лежить у репозиторії у файлі map-report.txt.
+# Далі сервер оновлюється так само, як після нового zip (сам за хвилину або твоїм звичним рестартом).
+name: Зібрати карту
+on:
+  push:
+    paths: ["tileweaver_*.json"]
+permissions:
+  contents: write
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Зібрати карту
+        run: |
+          if ! ls tileweaver_*.json >/dev/null 2>&1; then echo "Файлу карти немає (його вже оброблено)."; exit 0; fi
+          F=$(ls -t tileweaver_*.json | head -n1)
+          echo "Карта: $F"
+          node scripts/build-map.mjs "$F" 2>&1 | tee map-report.txt
+          cp "$F" map-src/map.json
+          rm -f tileweaver_*.json
+      - name: Зберегти
+        run: |
+          git config user.name "map-build"
+          git config user.email "actions@users.noreply.github.com"
+          git add -A
+          git commit -m "Оновлення карти" || echo "Змін немає"
+          git push
